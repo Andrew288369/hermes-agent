@@ -156,6 +156,7 @@ def _cmd_repair(args):
         f"    hermes sessions recover --source {source_hint} \\\n"
         "        --output recovered-state.db"
     )
+    return 1
 
 
 def _cmd_recover(args):
@@ -679,7 +680,7 @@ def _prune_never_active_keyed(db, args):
         if seconds is None:
             print(f"Error: --older-than '{older_than}' is not a duration. "
                   "Use a bare number of days or a form like '2d' / '1w'.")
-            return
+            return 1
         days = seconds / 86400.0
     candidates = db.list_never_active_keyed_sessions(older_than_days=days)
     if not candidates:
@@ -753,7 +754,7 @@ def _cmd_prune_or_archive(db, args, action):
     if not prune and not any(v for k, v in filters.items() if k != "older_than_days"):
         print("Refusing to archive every ended session: pass at least one "
               "filter (e.g. --newer-than 5h, --source cli, --title codex).")
-        return
+        return 1
 
     # Prune skips archived rows unless --include-archived; archive only targets not-yet-archived rows.
     filters["archived"] = None if prune and getattr(args, "include_archived", False) else False
@@ -962,7 +963,7 @@ def _cmd_optimize(db, args):
         n = db.vacuum()  # merges FTS5 segments then VACUUMs; returns indexes merged
     except Exception as e:
         print(f"Error: optimization failed: {e}")
-        return
+        return 1
     print(f"Optimized {n} FTS index(es).")
     _print_size_change(db, before_mb)
 
