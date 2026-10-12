@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import platform
+import subprocess
 import sys
 import threading
 import time
@@ -695,8 +696,6 @@ _POSIX_SH = "/bin/sh" if os.path.exists("/bin/sh") else "/system/bin/sh"
 
 def _spawn_supervisor():
     """Start the per-process supervisor, or None if it cannot be started."""
-    import subprocess
-
     try:
         # start_new_session=True is load-bearing: shutdown paths killpg this process's own group,
         # which would kill the supervisor before it could reap anything. close_fds keeps the write
@@ -790,6 +789,6 @@ def update_supervised_pgids(verb: str, pgids) -> None:
             # Reap it, or the exited supervisor stays a zombie until the next Popen in this process.
             try:
                 proc.wait(timeout=5)
-            except Exception:
-                pass
+            except subprocess.TimeoutExpired:
+                logger.warning("owner-death supervisor pid %s did not exit 5 s after release", proc.pid)
             _supervisor = None

@@ -10,13 +10,21 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import process_identity
+from tests.waiting import wait_until
 from tools import browser_use_cli
+
+
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)  # windows-footgun: ok — posix-marked test
+    except ProcessLookupError:
+        return False
+    return True
 
 pytestmark = pytest.mark.platforms("posix")
 
@@ -126,15 +134,8 @@ def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
         daemon_pid = int(owner.stdout.readline())
         owner.kill()
         owner.wait(timeout=10)
-        deadline = time.monotonic() + 15
-        while time.monotonic() < deadline:
-            try:
-                os.killpg(daemon_pid, 0)  # windows-footgun: ok — posix-marked test
-            except ProcessLookupError:
-                break
-            time.sleep(0.05)
-        else:
-            pytest.fail("the harness daemon outlived kill -9 of the Hermes process that drove it")
+        wait_until(lambda: not _group_alive(daemon_pid), timeout=15,
+                   what="the harness daemon to die with the kill -9'd Hermes process that drove it")
     finally:
         if daemon_pid is not None:
             try:
