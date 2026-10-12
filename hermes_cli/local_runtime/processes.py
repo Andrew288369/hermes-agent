@@ -122,12 +122,9 @@ def spawn_server(cmd, *, owned: bool = False, **kwargs) -> tuple[subprocess.Pope
     if sys.platform != "win32":
         if not owned:
             return subprocess.Popen(cmd, **kwargs), None
-        from hermes_cli.process_identity import register_child, update_supervised_pgids
+        from hermes_cli.process_identity import spawn_owned
 
-        proc = subprocess.Popen(cmd, start_new_session=True, **kwargs)
-        update_supervised_pgids("register", [proc.pid])
-        register_child(proc.pid, "llama-server")
-        return proc, None
+        return spawn_owned(cmd, purpose="llama-server", **kwargs), None
     job = _WindowsJob()
     proc = None
     try:

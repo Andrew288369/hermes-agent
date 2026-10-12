@@ -679,10 +679,14 @@ def attach_self_to_kill_on_close_job() -> bool:
 # A registered group that was never unregistered IS the orphan set, so a clean exit that stopped its
 # children first ends with nothing to kill, and one that didn't takes them along.
 #
-# Callers own process GROUPS: spawn the child as a group leader (``start_new_session=True``) and
-# hand its pgid to ``update_supervised_pgids`` (stdio MCP servers, whose pgids the SDK spawns). A
-# descendant that leaves the group on purpose must be registered by its own pgid where we learn it.
-# POSIX-only: Windows children die through the layer-3 job object instead.
+# ``spawn_owned`` is THE way to start a long-lived child that must die with this process: the child
+# leads its own process group, that group is handed to the supervisor, and the child is recorded in
+# the spawn ledger. Children something else spawns (the MCP SDK, a daemon's own Chromium) hand their
+# group to ``own_process_groups`` where we learn the pgid; a descendant that leaves the group on
+# purpose is registered by its own pgid the same way. Stopping an owned child yourself ends with
+# ``release_process_groups``. ``scripts/check_detached_spawns.py`` keeps new detached spawns
+# (start_new_session / setsid / setpgid) from bypassing this. POSIX-only: Windows children die
+# through the layer-3 job object instead.
 
 _supervisor = None  # Optional[subprocess.Popen]; tests rebind it
 _supervisor_lock = threading.Lock()
@@ -729,10 +733,36 @@ def _prune_dead_supervised_pgids() -> set:
     return stale
 
 
-def update_supervised_pgids(verb: str, pgids) -> None:
-    """Register or unregister process groups (``verb`` is ``"register"``/``"unregister"``) with
-    this process's supervisor. Failures are swallowed: losing the safety net must never fail a
-    live child."""
+def own_process_groups(pgids) -> None:
+    """Make these process groups die with this process, however it dies (see layer 4 above)."""
+    _update_supervised_pgids("register", pgids)
+
+
+def release_process_groups(pgids) -> None:
+    """Stop covering these groups: this process stopped them itself."""
+    _update_supervised_pgids("unregister", pgids)
+
+
+def spawn_owned(argv, *, purpose: str, **popen_kwargs) -> subprocess.Popen:
+    """Start a long-lived child that dies with this process: the one way to own a child.
+
+    POSIX: the child leads a new session and process group, and that group goes to the owner-death
+    supervisor, so the child and every descendant that stays in its group die the moment this
+    process dies by any cause (SIGKILL, OOM, crash). The child is recorded in the spawn ledger under
+    ``purpose``. Call ``release_process_groups([proc.pid])`` after stopping it yourself.
+    Windows: a plain ``Popen`` with the caller's kwargs (the layer-3 job object covers ownership).
+    """
+    if os.name != "posix":
+        return subprocess.Popen(argv, **popen_kwargs)
+    proc = subprocess.Popen(argv, start_new_session=True, **popen_kwargs)
+    own_process_groups([proc.pid])
+    register_child(proc.pid, purpose)
+    return proc
+
+
+def _update_supervised_pgids(verb: str, pgids) -> None:
+    """Send ``register``/``unregister`` for ``pgids`` to this process's supervisor. Failures are
+    swallowed: losing the safety net must never fail a live child."""
     if os.name != "posix":
         return
     wanted = {int(pgid) for pgid in pgids}

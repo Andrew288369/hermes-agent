@@ -27,7 +27,7 @@ from pathlib import Path
 from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.endpoint import child_query
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
-from hermes_cli.process_identity import update_supervised_pgids
+from hermes_cli.process_identity import release_process_groups
 
 logger = logging.getLogger(__name__)
 
@@ -300,7 +300,7 @@ class LlamaServerSupervisor:
             if self.proc is not None:
                 # Stopped by us: the owner-death supervisor has nothing left to cover. Only
                 # after a terminate that returned, so a tree we failed to kill stays covered.
-                update_supervised_pgids("unregister", [self.proc.pid])
+                release_process_groups([self.proc.pid])
             # Retain state: deleting it could race a replacement publication.
             if self._log_handle:
                 self._log_handle.close()

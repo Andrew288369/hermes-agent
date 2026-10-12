@@ -384,6 +384,26 @@ def all_groups_alive(monkeypatch):
     monkeypatch.setattr(process_identity.os, "killpg", lambda pgid, sig: None)
 
 
+@pytest.mark.live_system_guard_bypass
+def test_spawn_owned_starts_a_group_leader_registers_it_and_records_the_ledger(monkeypatch):
+    """The one way to own a child: own group, handed to the supervisor, recorded in the ledger."""
+    fake = _FakeSupervisor()
+    ledger = []
+    monkeypatch.setattr(process_identity, "_spawn_supervisor", lambda: fake)
+    monkeypatch.setattr(process_identity, "register_child", lambda pid, purpose: ledger.append((pid, purpose)))
+    proc = process_identity.spawn_owned(_VICTIM, purpose="unit-test", stdin=subprocess.DEVNULL)
+    try:
+        assert os.getpgid(proc.pid) == proc.pid, "an owned child must lead its own process group"
+        assert os.getpgid(proc.pid) != os.getpgid(0)
+        assert f"register {proc.pid}" in fake.lines(), "the owned child's group never reached the supervisor"
+        assert ledger == [(proc.pid, "unit-test")]
+        process_identity.release_process_groups([proc.pid])
+        assert proc.pid not in process_identity._supervised_pgids
+    finally:
+        _kill(proc.pid)
+        proc.wait(timeout=10)
+
+
 def test_register_starts_the_supervisor_once_and_reuses_it(monkeypatch, all_groups_alive):
     spawned = []
 
@@ -394,8 +414,8 @@ def test_register_starts_the_supervisor_once_and_reuses_it(monkeypatch, all_grou
 
     monkeypatch.setattr(process_identity, "_spawn_supervisor", _spawn)
 
-    process_identity.update_supervised_pgids("register", [111])
-    process_identity.update_supervised_pgids("register", [222])
+    process_identity.own_process_groups([111])
+    process_identity.own_process_groups([222])
 
     assert len(spawned) == 1, "each register spawned its own supervisor"
     assert spawned[0].lines() == ["register 111", "register 222"]
@@ -417,17 +437,17 @@ def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_gr
 
     monkeypatch.setattr(process_identity, "_spawn_supervisor", _spawn)
 
-    process_identity.update_supervised_pgids("register", [111, 222])
-    process_identity.update_supervised_pgids("unregister", [111])
+    process_identity.own_process_groups([111, 222])
+    process_identity.release_process_groups([111])
     assert not spawned[0].closed, "released the supervisor while a group was still registered"
 
-    process_identity.update_supervised_pgids("unregister", [222])
+    process_identity.release_process_groups([222])
     assert spawned[0].closed, "supervisor kept resident with nothing left to reap"
     assert getattr(spawned[0], "waited", False), "released supervisor was never wait()ed -> zombie until the next Popen"
     assert spawned[0].lines()[-1] == "unregister 222", "release happened before the last unregister was sent"
     assert process_identity._supervisor is None
 
-    process_identity.update_supervised_pgids("register", [333])
+    process_identity.own_process_groups([333])
     assert len(spawned) == 2 and spawned[1].lines() == ["register 333"]
 
 
@@ -435,10 +455,10 @@ def test_supervisor_survives_the_real_eof_release():
     """End to end: closing the control pipe with nothing registered exits cleanly."""
     child = subprocess.Popen(_VICTIM, start_new_session=True)
     try:
-        process_identity.update_supervised_pgids("register", [os.getpgid(child.pid)])
+        process_identity.own_process_groups([os.getpgid(child.pid)])
         proc = process_identity._supervisor
         assert proc is not None and proc.poll() is None
-        process_identity.update_supervised_pgids("unregister", [os.getpgid(child.pid)])
+        process_identity.release_process_groups([os.getpgid(child.pid)])
         assert process_identity._supervisor is None
         assert proc.wait(timeout=10) == 0, "supervisor did not exit on the release EOF"
         assert child.poll() is None, "release reaped a group that had been unregistered"
@@ -455,7 +475,7 @@ def test_unregister_alone_does_not_start_a_supervisor(monkeypatch):
         lambda: spawned.append(1) or _FakeSupervisor(),
     )
 
-    process_identity.update_supervised_pgids("unregister", [111])
+    process_identity.release_process_groups([111])
 
     assert spawned == []
 
@@ -466,8 +486,8 @@ def test_a_dead_supervisor_is_replaced_and_live_coverage_replayed(monkeypatch, a
     queue = [dead, replacement]
     monkeypatch.setattr(process_identity, "_spawn_supervisor", lambda: queue.pop(0))
 
-    process_identity.update_supervised_pgids("register", [111])
-    process_identity.update_supervised_pgids("register", [222])
+    process_identity.own_process_groups([111])
+    process_identity.own_process_groups([222])
 
     # Losing the supervisor must not silently drop the child registered with
     # it -- the replacement has to be told about 111 as well as 222.
@@ -480,9 +500,9 @@ def test_replay_does_not_resurrect_an_unregistered_group(monkeypatch, all_groups
     queue = [dead, replacement]
     monkeypatch.setattr(process_identity, "_spawn_supervisor", lambda: queue.pop(0))
 
-    process_identity.update_supervised_pgids("register", [111])
-    process_identity.update_supervised_pgids("register", [222])
-    process_identity.update_supervised_pgids("unregister", [111])
+    process_identity.own_process_groups([111])
+    process_identity.own_process_groups([222])
+    process_identity.release_process_groups([111])
 
     assert process_identity._supervised_pgids == {222}
     # 111 was legitimately replayed to the replacement (it was live when the
@@ -491,7 +511,7 @@ def test_replay_does_not_resurrect_an_unregistered_group(monkeypatch, all_groups
     lines = replacement.lines()
     assert lines.index("unregister 111") > lines.index("register 111")
     assert "register 111" not in lines[lines.index("unregister 111") :]
-    process_identity.update_supervised_pgids("register", [333])  # any later replay/append
+    process_identity.own_process_groups([333])  # any later replay/append
     assert "register 111" not in replacement.lines()[len(lines) :]
 
 
@@ -511,7 +531,7 @@ def test_a_broken_pipe_never_propagates_into_a_live_child(monkeypatch, all_group
 
     monkeypatch.setattr(process_identity, "_spawn_supervisor", _BrokenPipe)
 
-    process_identity.update_supervised_pgids("register", [111])  # must not raise
+    process_identity.own_process_groups([111])  # must not raise
 
     # Dropped, so the next registration respawns instead of writing into a
     # pipe that is known to be dead.
@@ -534,7 +554,7 @@ def test_unregister_after_a_broken_pipe_rebuilds_coverage_for_survivors(monkeypa
         return fake
 
     monkeypatch.setattr(process_identity, "_spawn_supervisor", _spawn)
-    process_identity.update_supervised_pgids("register", [111, 222])
+    process_identity.own_process_groups([111, 222])
 
     class _DeadStdin:
         def write(self, _payload):
@@ -544,11 +564,11 @@ def test_unregister_after_a_broken_pipe_rebuilds_coverage_for_survivors(monkeypa
             pass
 
     spawned[0].stdin = _DeadStdin()
-    process_identity.update_supervised_pgids("register", [333])  # the write fails; supervisor dropped
+    process_identity.own_process_groups([333])  # the write fails; supervisor dropped
     assert process_identity._supervisor is None
     assert process_identity._supervised_pgids == {111, 222, 333}
 
-    process_identity.update_supervised_pgids("unregister", [222])
+    process_identity.release_process_groups([222])
 
     assert len(spawned) == 2, "unregister after a lost supervisor did not respawn one"
     assert sorted(spawned[1].lines()) == ["register 111", "register 333"], (
@@ -560,7 +580,7 @@ def test_unregister_after_a_broken_pipe_rebuilds_coverage_for_survivors(monkeypa
 def test_a_supervisor_that_cannot_start_is_not_fatal(monkeypatch, all_groups_alive):
     monkeypatch.setattr(process_identity, "_spawn_supervisor", lambda: None)
 
-    process_identity.update_supervised_pgids("register", [111])  # must not raise
+    process_identity.own_process_groups([111])  # must not raise
 
     assert process_identity._supervisor is None
 
@@ -697,7 +717,7 @@ def test_scoped_teardown_of_one_owner_keeps_the_other_owner_supervised(monkeypat
             _mcp_lifecycle._stdio_pids[b.pid] = "profile-b"
             _mcp_lifecycle._stdio_pgids[a.pid] = pg_a
             _mcp_lifecycle._stdio_pgids[b.pid] = pg_b
-        process_identity.update_supervised_pgids("register", [pg_a, pg_b])
+        process_identity.own_process_groups([pg_a, pg_b])
 
         _mcp_lifecycle._kill_orphaned_mcp_children(include_active=True, server_name="profile-a")
         a.wait(timeout=10)
@@ -737,7 +757,7 @@ def test_a_group_with_nothing_left_alive_is_forgotten_and_unregistered(monkeypat
     survivor = subprocess.Popen(_VICTIM, start_new_session=True)
     survivor_pgid = os.getpgid(survivor.pid)
     try:
-        process_identity.update_supervised_pgids("register", [doomed_pgid, survivor_pgid])
+        process_identity.own_process_groups([doomed_pgid, survivor_pgid])
         assert process_identity._supervised_pgids == {doomed_pgid, survivor_pgid}
 
         # Reap it fully so the group is genuinely empty, not a zombie.
@@ -745,7 +765,7 @@ def test_a_group_with_nothing_left_alive_is_forgotten_and_unregistered(monkeypat
         doomed.wait(timeout=10)
 
         # Any later registration change is when we notice.
-        process_identity.update_supervised_pgids("register", [survivor_pgid])
+        process_identity.own_process_groups([survivor_pgid])
 
         assert doomed_pgid not in process_identity._supervised_pgids, (
             "a group with no members left stayed registered, so a recycled "
@@ -789,6 +809,6 @@ def test_no_pgids_is_a_no_op(monkeypatch):
         lambda: spawned.append(1) or _FakeSupervisor(),
     )
 
-    process_identity.update_supervised_pgids("register", [])
+    process_identity.own_process_groups([])
 
     assert spawned == []

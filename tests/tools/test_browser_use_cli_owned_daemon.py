@@ -52,7 +52,8 @@ def fake_daemon(tmp_path):
 @pytest.fixture
 def registered(monkeypatch):
     calls = []
-    monkeypatch.setattr(browser_use_cli, "update_supervised_pgids", lambda verb, pgids: calls.append((verb, list(pgids))))
+    for verb, name in (("register", "own_process_groups"), ("unregister", "release_process_groups")):
+        monkeypatch.setattr(browser_use_cli, name, lambda pgids, verb=verb: calls.append((verb, list(pgids))))
     monkeypatch.setattr(browser_use_cli, "register_child", lambda pid, purpose: None)
     monkeypatch.setattr(browser_use_cli, "_owned_daemon_groups", {})
     return calls

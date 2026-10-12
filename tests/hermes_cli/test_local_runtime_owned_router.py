@@ -105,8 +105,8 @@ def test_a_graceful_stop_releases_the_routers_group(monkeypatch, tmp_path):
 
     released = []
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
-    monkeypatch.setattr(supervisor, "update_supervised_pgids",
-                        lambda verb, pgids: released.append((verb, list(pgids))))
+    monkeypatch.setattr(supervisor, "release_process_groups",
+                        lambda pgids: released.append(("unregister", list(pgids))))
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
     sup.proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                                 stdin=subprocess.DEVNULL, start_new_session=True)
