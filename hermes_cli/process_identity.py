@@ -703,7 +703,7 @@ def _spawn_supervisor():
         return subprocess.Popen(
             [_POSIX_SH, str(_SUPERVISOR_SCRIPT), str(os.getpgid(0))],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True, text=True)
+            start_new_session=True, close_fds=True, text=True, encoding="utf-8")
     except Exception:
         # Never let supervisor bookkeeping block a real child: graceful shutdown paths still reap
         # normally; only the ungraceful-exit safety net is lost.
