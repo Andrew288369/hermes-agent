@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from tools.computer_use import cua_backend_driver
+from tools.computer_use import cua_backend_daemon, cua_backend_driver
 
 
 @pytest.fixture(autouse=True)
@@ -163,6 +163,10 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     ), patch("hermes_cli.process_identity._update_supervised_pgids") as supervise, patch(
         # A Mock pid must never reach the real owner-death supervisor or the spawn ledger.
         "hermes_cli.process_identity.register_child"
+    ), patch.object(
+        # stop() releases the group once it is empty; the Mock process has no real group to probe.
+        cua_backend_daemon, "release_process_group_once_empty",
+        side_effect=lambda pgid, **kw: supervise("unregister", [pgid]),
     ):
         daemon.start()
         command = popen.call_args.args[0]
