@@ -19,6 +19,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.waiting import wait_until
+
 from hermes_cli import process_identity
 from tools import mcp_tool
 from tools import mcp_tool_lifecycle as _mcp_lifecycle
@@ -45,12 +47,11 @@ def _alive(pid: int) -> bool:
 
 def _wait_gone(pid: int, timeout: float = 15.0) -> bool:
     """Wait for a process this test does NOT own to disappear."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _alive(pid):
-            return True
-        time.sleep(0.05)
-    return False
+    try:
+        wait_until(lambda: not _alive(pid), timeout=timeout)
+    except AssertionError:
+        return False
+    return True
 
 
 def _wait_exited(proc: subprocess.Popen, timeout: float = 15.0) -> bool:

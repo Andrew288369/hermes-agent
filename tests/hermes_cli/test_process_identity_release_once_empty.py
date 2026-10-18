@@ -3,15 +3,11 @@
 import os
 import signal
 import subprocess
-import sys
 import threading
 
 import pytest
 
 from hermes_cli import process_identity
-
-pytestmark = pytest.mark.platforms("posix")
-
 
 @pytest.fixture
 def released(monkeypatch):
@@ -25,6 +21,7 @@ def _leader(script: str) -> subprocess.Popen:
                             start_new_session=True)  # detached-spawn: ok — test stand-in, killed in finally
 
 
+@pytest.mark.platforms("posix")
 def test_an_empty_group_is_released_even_with_an_unreaped_leader(released):
     leader = _leader("exit 0")
     # Not wait()ed: the zombie leader keeps killpg(pgid, 0) succeeding until proc.poll() reaps it.
@@ -32,6 +29,7 @@ def test_an_empty_group_is_released_even_with_an_unreaped_leader(released):
     assert released == [[leader.pid]]
 
 
+@pytest.mark.platforms("posix")
 def test_a_group_with_a_live_member_stays_covered(released):
     leader = _leader("trap '' TERM; exec sleep 60")
     try:
@@ -42,6 +40,7 @@ def test_a_group_with_a_live_member_stays_covered(released):
         leader.wait(timeout=10)
 
 
+@pytest.mark.platforms("posix")
 def test_it_waits_for_a_member_that_exits_late(released):
     leader = _leader("exec sleep 60")
     threading.Timer(0.3, lambda: os.killpg(leader.pid, signal.SIGKILL)).start()  # windows-footgun: ok — posix-marked test
@@ -54,7 +53,8 @@ def test_it_waits_for_a_member_that_exits_late(released):
         leader.wait(timeout=10)
 
 
-def test_windows_never_releases(monkeypatch, released):
-    monkeypatch.setattr(process_identity.os, "name", "nt")
-    assert not process_identity.release_process_group_once_empty(sys.maxsize, timeout=0)
+@pytest.mark.platforms("windows")
+def test_windows_never_releases(released):
+    """Windows children die through the job object; there is no supervised group to release."""
+    assert not process_identity.release_process_group_once_empty(os.getpid(), timeout=0)
     assert released == []
