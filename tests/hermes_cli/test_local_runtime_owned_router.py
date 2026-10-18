@@ -4,15 +4,17 @@ All processes and homes are disposable; the owner is a real Hermes process impor
 ``spawn_server(owned=True)`` path, and it is SIGKILLed so no Python cleanup of ours can run.
 """
 
+import contextlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 
 import psutil
 import pytest
+
+from tests.waiting import wait_until
 
 pytestmark = pytest.mark.platforms("posix")
 
@@ -40,17 +42,8 @@ else:
 '''
 
 
-def _wait(predicate, timeout=15.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.05)
-    return bool(predicate())
-
-
 def _read(path):
-    assert _wait(path.exists), f"missing child receipt: {path}"
+    wait_until(path.exists, timeout=15, what=f"child receipt {path}")
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
@@ -88,8 +81,8 @@ def test_owner_sigkill_reaps_router_tree_not_an_external_control(tmp_path):
             launchers[1].kill()  # SIGKILL the owner: no atexit, no finally, nothing of ours runs
             launchers[1].wait(timeout=10)
 
-            assert _wait(lambda: not _alive(ids["router"]) and not _alive(ids["grandchild"])), (
-                "router tree survived kill -9 of its owner", ids)
+            wait_until(lambda: not _alive(ids["router"]) and not _alive(ids["grandchild"]), timeout=15,
+                       what=f"router tree to die after kill -9 of its owner: {ids}")
             assert _alive(ids["control"]), "an unrelated process was killed"
         finally:
             for identity in ids.values():
@@ -101,21 +94,51 @@ def test_owner_sigkill_reaps_router_tree_not_an_external_control(tmp_path):
 
 
 def test_a_graceful_stop_releases_the_routers_group(monkeypatch, tmp_path):
+    from hermes_cli import process_identity
     from hermes_cli.local_runtime import supervisor
 
-    released = []
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
-    monkeypatch.setattr(supervisor, "release_process_groups",
-                        lambda pgids: released.append(("unregister", list(pgids))))
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
     sup.proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"],
                                 stdin=subprocess.DEVNULL, start_new_session=True)
+    process_identity.own_process_groups([sup.proc.pid])
     try:
         sup.stop()
         assert sup.proc.poll() is not None, "stop() left the router running"
-        assert released == [("unregister", [sup.proc.pid])], (
+        assert sup.proc.pid not in process_identity._supervised_pgids, (
             "a router this process stopped itself stayed registered with the owner-death supervisor")
     finally:
         if sup.proc.poll() is None:
             sup.proc.kill()
         sup.proc.wait(timeout=10)
+        process_identity.release_process_groups([sup.proc.pid])
+
+
+def test_stop_after_a_router_crash_still_stops_its_surviving_model_child(monkeypatch, tmp_path):
+    """The watcher's restart backoff: the router died, its model child (same group) still runs."""
+    from hermes_cli import process_identity
+    from hermes_cli.local_runtime import supervisor
+
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
+    sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59997)
+    receipt = tmp_path / "model.pid"
+    sup.proc = subprocess.Popen(  # detached-spawn: ok — test router stand-in; its group is killed below
+        [sys.executable, "-c",
+         "import subprocess, sys; c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']);"
+         f" open({str(receipt)!r}, 'w').write(str(c.pid))"],
+        stdin=subprocess.DEVNULL, start_new_session=True)
+    process_identity.own_process_groups([sup.proc.pid])
+    pgid = sup.proc.pid
+    try:
+        sup.proc.wait(timeout=30)  # the router "crashed"; the model child is still in its group
+        model = psutil.Process(int(wait_until(lambda: receipt.exists() and receipt.read_text(encoding="utf-8"),
+                                              what="model child receipt")))
+        assert os.getpgid(model.pid) == pgid
+        sup.stop()
+        wait_until(lambda: not model.is_running() or model.status() == psutil.STATUS_ZOMBIE, timeout=10,
+                   what="stop() to stop the crashed router's surviving model child")
+        assert pgid not in process_identity._supervised_pgids
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pgid, 9)  # windows-footgun: ok — posix-marked test
+        process_identity.release_process_groups([pgid])

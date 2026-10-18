@@ -27,7 +27,7 @@ from pathlib import Path
 from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.endpoint import child_query
 from hermes_cli.local_runtime.processes import server_child_env, spawn_server
-from hermes_cli.process_identity import release_process_groups
+from hermes_cli.process_identity import stop_owned_group_survivors
 
 logger = logging.getLogger(__name__)
 
@@ -297,10 +297,11 @@ class LlamaServerSupervisor:
                 if self._job is not None:
                     self._job.close()
                     self._job = None
-            if self.proc is not None:
-                # Stopped by us: the owner-death supervisor has nothing left to cover. Only
-                # after a terminate that returned, so a tree we failed to kill stays covered.
-                release_process_groups([self.proc.pid])
+            if self.proc is not None and sys.platform != "win32":
+                # A router that crashed (the watcher's restart backoff) can leave its model children
+                # running in its group: stop them, then release the group only once it is empty, so
+                # a tree we failed to kill stays covered by the owner-death supervisor.
+                stop_owned_group_survivors(self.proc.pid, proc=self.proc)
             # Retain state: deleting it could race a replacement publication.
             if self._log_handle:
                 self._log_handle.close()

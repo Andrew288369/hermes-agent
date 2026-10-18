@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import platform
+import signal
 import subprocess
 import sys
 import threading
@@ -775,6 +776,31 @@ def release_process_group_once_empty(pgid: int, *, proc=None, timeout: float = 1
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.05)
+
+
+def stop_owned_group_survivors(pgid: int, *, proc=None, grace: float = 3.0) -> bool:
+    """Stop what is left of owned group ``pgid`` after its leader exited, then release it; True once
+    released. Members that outlived a crashed leader (a router's model children) keep the group, and
+    so its number, alive: TERM, wait ``grace``, KILL. Only groups this process registered are
+    signalled, so a number never registered here (or already released) is never touched."""
+    if os.name != "posix":
+        return False
+    with _supervisor_lock:
+        owned = pgid in _supervised_pgids
+    if owned:
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 1.0)):
+            if release_process_group_once_empty(pgid, proc=proc, timeout=0):
+                return True
+            try:
+                os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only, returned above
+            except ProcessLookupError:
+                pass
+            except OSError:
+                return False  # not ours to signal: keep covering it
+            if release_process_group_once_empty(pgid, proc=proc, timeout=wait):
+                return True
+        return False
+    return release_process_group_once_empty(pgid, proc=proc, timeout=0)
 
 
 def spawn_owned(argv, *, purpose: str, **popen_kwargs) -> subprocess.Popen:
