@@ -38,3 +38,15 @@ def test_an_owned_spawn_racing_mcp_discovery_does_not_hand_mcp_the_supervisor(mo
             proc.wait(timeout=10)
         process_identity.release_process_group_once_empty(worker.pid, proc=worker, timeout=5)
         assert process_identity._supervisor is None, "releasing the last group stops the supervisor"
+
+
+def test_a_supervisor_whose_spawn_has_not_returned_yet_is_still_not_an_mcp_child(monkeypatch):
+    """``_supervisor`` is assigned only after the spawn returns; a scan in that gap must still skip it."""
+    monkeypatch.setattr(process_identity, "_supervisor", None)
+    supervisor = process_identity._spawn_supervisor()  # running, but not yet published as _supervisor
+    assert supervisor is not None
+    try:
+        assert mcp_tool_lifecycle._filter_mcp_children({supervisor.pid}) == set()
+    finally:
+        supervisor.stdin.close()
+        supervisor.wait(timeout=10)

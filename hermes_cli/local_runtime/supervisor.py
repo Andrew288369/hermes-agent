@@ -297,7 +297,7 @@ class LlamaServerSupervisor:
                 if self._job is not None:
                     self._job.close()
                     self._job = None
-            if self.proc is not None and sys.platform != "win32":
+            if self.proc is not None:
                 # A router that crashed (the watcher's restart backoff) can leave its model children
                 # running in its group: stop them, then release the group only once it is empty, so
                 # a tree we failed to kill stays covered by the owner-death supervisor.

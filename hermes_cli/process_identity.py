@@ -735,12 +735,12 @@ def _spawn_supervisor():
         return None
 
 
-def is_owner_death_supervisor(pid: int, argv: Sequence[str]) -> bool:
-    """True when ``pid`` is this process's supervisor. Another family's child discovery (MCP's
-    before/after child-pid delta) can catch it starting and must never adopt, and later kill, it."""
-    proc = _supervisor
-    return (proc is not None and proc.pid == pid
-            and any(arg == str(_SUPERVISOR_SCRIPT) for arg in argv[1:]))
+def is_owner_death_supervisor(argv: Sequence[str]) -> bool:
+    """True when a direct child's ``argv`` is this install's supervisor (``sh <script> <pgid>``).
+    Another family's child discovery (MCP's before/after child-pid delta) can catch it starting and
+    must never adopt, and later kill, it. Matched on the script path, not ``_supervisor.pid``: that
+    is assigned only after the spawn returns, so a scan racing the spawn would miss it."""
+    return list(argv[1:2]) == [str(_SUPERVISOR_SCRIPT)]
 
 
 def _prune_dead_supervised_pgids() -> set:
