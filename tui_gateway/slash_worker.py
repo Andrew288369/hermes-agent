@@ -21,6 +21,8 @@ import json
 import logging
 import os
 import sys
+import threading
+import time
 from typing import TYPE_CHECKING
 
 from tui_gateway._stdin_recovery import handle_spurious_eof
@@ -29,6 +31,34 @@ if TYPE_CHECKING:
     from cli import HermesCLI
 
 logger = logging.getLogger(__name__)
+
+
+_in_flight = threading.Event()  # set while a command executes (the legacy watchdog's grace)
+
+
+def _start_legacy_parent_watchdog(parent_pid: int, *, poll_s: float = 2.0, grace_s: float = 5.0) -> None:
+    """Keep the old death guard for a worker launched by a pre-update gateway.
+
+    A gateway started before the owned-child change still runs its old code. That code starts this
+    (updated) worker with a plain Popen and ``--parent-pid`` and never registers it with an
+    owner-death supervisor. If that gateway dies while the worker is inside a command, stdin EOF is
+    never read and nothing stops the worker. The watchdog compares the kernel's live ppid with the
+    pid passed at spawn, so a reused pid can never pass for the parent. An in-flight command gets
+    ``grace_s`` to finish. POSIX only: Windows never reparents, so the check could not fire there.
+    Current gateways don't pass ``--parent-pid`` (spawn_owned covers the worker), so it never starts.
+    """
+    if not parent_pid or os.name != "posix":
+        return
+
+    def _loop():
+        while os.getppid() == parent_pid:
+            time.sleep(poll_s)
+        deadline = time.monotonic() + grace_s
+        while _in_flight.is_set() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        os._exit(0)
+
+    threading.Thread(target=_loop, daemon=True, name="slash-legacy-parent-watchdog").start()
 
 
 def _prepare_slash_worker_runtime() -> None:
@@ -125,12 +155,13 @@ def main():
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
     p.add_argument("--provider", default="")
-    # Accepted and ignored: a gateway started before an update still passes it to the updated worker
-    # code on disk. The worker dies with its gateway through the gateway's owner-death supervisor.
+    # Passed only by a gateway started before the owned-child update (see the legacy watchdog).
     p.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
     args = p.parse_args()
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
+    # Before the heavy cli import, so a legacy parent dying during startup is still noticed.
+    _start_legacy_parent_watchdog(args.parent_pid)
     # Import cli ahead of MCP discovery: importing it loads ~/.hermes/.env and sets HERMES_QUIET,
     # which MCP ``${VAR}`` interpolation in the runtime prep depends on.
     from cli import HermesCLI
@@ -156,6 +187,7 @@ def main():
         line = raw.strip()
         if not line:
             continue
+        _in_flight.set()
         rid = None
         try:
             req = json.loads(line)
@@ -165,6 +197,7 @@ def main():
         except Exception as e:
             _reply(id=rid, ok=False, error=str(e))
         finally:
+            _in_flight.clear()
             # Workers persist for the TUI session: release allocator pages at the command boundary like
             # other long-lived gateway processes (trim_memory's shared cooldown coalesces nearby activity).
             try:

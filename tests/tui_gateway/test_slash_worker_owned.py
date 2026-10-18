@@ -166,9 +166,9 @@ def test_a_worker_that_already_died_is_never_group_signalled(monkeypatch):
             os.killpg(leader.pid, signal.SIGKILL)  # windows-footgun: ok — posix-marked test
 
 
-def test_main_imports_cli_before_runtime_prep_and_accepts_a_legacy_parent_pid(monkeypatch):
+def test_main_arms_the_legacy_watchdog_then_imports_cli_before_runtime_prep(monkeypatch):
     """``cli`` loads ~/.hermes/.env, which MCP discovery in the runtime prep needs. A gateway started
-    before an update still passes ``--parent-pid``; the updated worker must still start."""
+    before an update still passes ``--parent-pid``; its death guard starts before the slow import."""
     events = []
 
     class FakeHermesCLI:
@@ -191,12 +191,13 @@ def test_main_imports_cli_before_runtime_prep_and_accepts_a_legacy_parent_pid(mo
     monkeypatch.delitem(sys.modules, "cli")
     monkeypatch.setattr(sys, "meta_path", [FakeCliFinder(), *sys.meta_path])
     monkeypatch.setattr(slash_worker, "_prepare_slash_worker_runtime", lambda: events.append(("runtime",)))
+    monkeypatch.setattr(slash_worker, "_start_legacy_parent_watchdog", lambda pid: events.append(("watchdog", pid)))
     monkeypatch.setattr(sys, "argv", ["slash_worker", "--session-key", "session-1", "--parent-pid", "424242"])
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
 
     slash_worker.main()
 
-    assert events == [("cli-import",), ("runtime",), ("cli", "session-1")]
+    assert events == [("watchdog", 424242), ("cli-import",), ("runtime",), ("cli", "session-1")]
 
 
 def test_slash_worker_close_reaps_zombie_and_closes_fds(monkeypatch):
@@ -245,3 +246,42 @@ def test_slash_worker_close_reaps_zombie_and_closes_fds(monkeypatch):
         assert calls["terminate"] == calls["kill"] == 1
     assert calls["wait"] >= 2  # reaped after both terminate and kill
     assert calls["stdin"] == calls["stdout"] == calls["stderr"] == 1
+
+
+# A gateway started before the owned-child update: it runs its OLD code (plain Popen, --parent-pid,
+# no supervisor registration) against the updated worker on disk.
+_LEGACY_OWNER = r'''
+import os, subprocess, sys
+r = int(sys.argv[1])
+worker = subprocess.Popen([sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", "legacy",
+                           "--parent-pid", str(os.getpid())], stdin=r, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, start_new_session=True, pass_fds=(r,))
+print(worker.pid, flush=True)
+sys.stdin.read()
+'''
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.live_system_guard_bypass  # the worker reparents to init once its legacy owner dies
+def test_a_worker_launched_by_a_pre_update_gateway_still_dies_with_it(tmp_path):
+    """The test keeps the worker's stdin open, as a worker busy inside a command never reads EOF, so
+    only the legacy death guard can stop it after its old-code parent is SIGKILLed."""
+    r, w = os.pipe()
+    owner = subprocess.Popen([sys.executable, "-c", _LEGACY_OWNER, str(r)], env=_home(tmp_path, "legacy"),
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, pass_fds=(r,))
+    os.close(r)
+    worker = None
+    try:
+        worker = psutil.Process(int(owner.stdout.readline()))
+        owner.kill()
+        owner.wait(timeout=10)
+        wait_until(lambda: not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE, timeout=30,
+                   what="the legacy-launched worker to exit after its parent's kill -9")
+    finally:
+        os.close(w)
+        if worker is not None:
+            with contextlib.suppress(psutil.Error):
+                worker.kill()
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(timeout=10)
