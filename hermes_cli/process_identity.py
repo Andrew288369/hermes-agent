@@ -140,6 +140,25 @@ def parse_spawn_tag(raw: object) -> Optional[SpawnTag]:
     return SpawnTag(install, purpose, pid, create) if pid > 0 else None
 
 
+def spawned_by_this_process(pid: int) -> bool:
+    """True when ``pid`` carries a spawn tag naming THIS process (pid and create time).
+
+    A shared daemon (one session or pid file every Hermes of this user can reach) is owned only by
+    the Hermes whose command actually started it: the CLI it ran was given ``spawn_env`` and the
+    daemon inherited it. A pid file proves what a process is, not who started it. Fails closed:
+    an unreadable environment (another user, a race) is not ours."""
+    try:
+        import psutil
+
+        tag = parse_spawn_tag(psutil.Process(int(pid)).environ().get(SPAWN_ENV_VAR))
+    except Exception:
+        return False
+    if tag is None or tag.spawner_pid != os.getpid():
+        return False
+    mine = _process_create_time()
+    return tag.spawner_create is None or mine is None or abs(tag.spawner_create - mine) < 2.0
+
+
 # Layer 2 — spawn ledger
 
 

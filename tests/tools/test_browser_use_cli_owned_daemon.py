@@ -40,7 +40,8 @@ def fake_daemon(tmp_path):
     (pkg / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "daemon.py").write_text("import time\ntime.sleep(300)\n", encoding="utf-8")
     proc = subprocess.Popen([sys.executable, "-m", "browser_harness.daemon"], cwd=str(tmp_path / "pkgroot"),
-                            stdin=subprocess.DEVNULL, start_new_session=True)
+                            stdin=subprocess.DEVNULL, start_new_session=True,
+                            env={**os.environ, **process_identity.spawn_env("browser-harness-daemon")})
     runtime = tmp_path / "runtime"
     runtime.mkdir()
     yield proc, runtime
@@ -123,7 +124,7 @@ def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
         "import json, os, subprocess, sys, time\n"
         "from tools import browser_use_cli\n"
         f"d = subprocess.Popen([sys.executable, '-m', 'browser_harness.daemon'], cwd={str(tmp_path / 'pkgroot')!r},"
-        " stdin=subprocess.DEVNULL, start_new_session=True)\n"
+        " stdin=subprocess.DEVNULL, start_new_session=True, env=browser_use_cli._base_subprocess_env())\n"
         f"open({str(runtime / 'bu.pid')!r}, 'w', encoding='utf-8').write(json.dumps({{'pid': d.pid}}))\n"  # windows-footgun: ok — a write
         f"browser_use_cli._own_harness_daemon({{'BH_RUNTIME_DIR': {str(runtime)!r}}})\n"
         "print(d.pid, flush=True)\n"
@@ -149,3 +150,30 @@ def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
             owner.kill()
         owner.wait(timeout=10)
         process_identity._supervised_pgids.clear()
+
+
+def test_a_daemon_another_live_hermes_started_on_the_same_name_is_never_registered(tmp_path, registered):
+    """Two Hermes processes on the default BU_NAME read the same bu-default.pid. The daemon belongs
+    to the one whose CLI started it: the other must not hand it to its supervisor, or that Hermes
+    dying would kill a browser session the first still uses."""
+    pkg = tmp_path / "pkgroot" / "browser_harness"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "daemon.py").write_text("import time\ntime.sleep(300)\n", encoding="utf-8")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    other_hermes = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE)
+    tag = process_identity.spawn_env("browser-harness-daemon")
+    tag[process_identity.SPAWN_ENV_VAR] = tag[process_identity.SPAWN_ENV_VAR].replace(
+        f":{os.getpid()}:", f":{other_hermes.pid}:")
+    daemon = subprocess.Popen([sys.executable, "-m", "browser_harness.daemon"], cwd=str(tmp_path / "pkgroot"),
+                              stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, **tag})
+    try:
+        _publish(runtime, "bu-default", daemon.pid)
+        browser_use_cli._own_harness_daemon({"BH_HOME": str(runtime.parent)})
+        assert registered == []
+    finally:
+        daemon.kill()
+        daemon.wait(timeout=10)
+        other_hermes.stdin.close()
+        other_hermes.wait(timeout=10)
