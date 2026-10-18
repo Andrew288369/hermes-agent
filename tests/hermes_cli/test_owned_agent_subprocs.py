@@ -6,14 +6,18 @@ while the live owner's tree is untouched. On origin/main every one of these tree
 forever: plain Popen children reparent to init, and detached ones lead their own session.
 """
 
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
 
 import psutil
 import pytest
+
+from hermes_cli import process_identity
 
 from tests.waiting import wait_until
 
@@ -182,7 +186,7 @@ async def test_whatsapp_disconnect_releases_the_bridge_it_stopped(monkeypatch):
     from plugins.platforms.whatsapp import adapter as wa
 
     released = []
-    monkeypatch.setattr(wa, "release_process_groups", lambda pgids: released.append(list(pgids)))
+    monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))
     bridge = _sleeper()
     from tests.gateway.test_whatsapp_connect import _make_adapter
 
@@ -201,7 +205,7 @@ def test_raft_stop_releases_the_bridge_it_stopped(monkeypatch):
     from plugins.platforms.raft import adapter as raft
 
     released = []
-    monkeypatch.setattr(raft, "release_process_groups", lambda pgids: released.append(list(pgids)))
+    monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))
     bridge = _sleeper()
     a = raft.RaftAdapter.__new__(raft.RaftAdapter)
     a._bridge_process = bridge
@@ -218,7 +222,7 @@ def test_verify_start_phase_owns_then_releases_the_app_group(monkeypatch, tmp_pa
     from agent.verify.recipes import Recipe
 
     released = []
-    monkeypatch.setattr(runner, "release_process_groups", lambda pgids: released.append(list(pgids)))
+    monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))
     result = runner._run_start_phase(Recipe(name="x", start="sleep 30", port=1), tmp_path, 0.3)
     assert not result.ready
     assert len(owned) == 1 and released == [owned]
@@ -228,7 +232,7 @@ def test_tts_command_owns_then_releases_its_group_after_success_and_idle_kill(mo
     from tools import tts_command_provider as tts
 
     released = []
-    monkeypatch.setattr(tts, "release_process_groups", lambda pgids: released.extend(pgids))
+    monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.extend(pgids))
     assert tts.run_command_provider("echo hi", 10.0).stdout.strip() == "hi"
     with pytest.raises(subprocess.TimeoutExpired):
         tts.run_command_provider("sleep 30", 0.3)
@@ -239,7 +243,7 @@ def test_whatsapp_pairing_terminate_releases_the_process_it_stopped(monkeypatch)
     from hermes_cli.web_routers import messaging
 
     released = []
-    monkeypatch.setattr(messaging, "release_process_groups", lambda pgids: released.append(list(pgids)))
+    monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))
     pairing = _sleeper()
     try:
         messaging._terminate_whatsapp_pairing(pairing)
@@ -247,3 +251,27 @@ def test_whatsapp_pairing_terminate_releases_the_process_it_stopped(monkeypatch)
         assert released == [[pairing.pid]]
     finally:
         _reap(pairing)
+
+
+def test_a_stopped_bridge_whose_child_survived_stays_covered(monkeypatch, tmp_path):
+    """Leader exit is not proof the group is empty: a helper that ignores TERM keeps it alive, and
+    releasing that group would let the helper outlive a later kill -9 of this process."""
+    from plugins.platforms.raft import adapter as raft
+
+    released = []
+    monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))
+    receipt = tmp_path / "helper.pid"
+    bridge = subprocess.Popen(  # detached-spawn: ok — test bridge stand-in; its group is killed in finally
+        ["sh", "-c", f"(trap '' TERM; echo $(exec sh -c 'echo $PPID') > {receipt}; exec sleep 60) & exec sleep 60"],
+        stdin=subprocess.DEVNULL, start_new_session=True)
+    a = raft.RaftAdapter.__new__(raft.RaftAdapter)
+    a._bridge_process = bridge
+    try:
+        wait_until(receipt.exists, what="helper receipt")
+        a._stop_bridge()
+        assert bridge.poll() is not None, "_stop_bridge() left the bridge running"
+        assert released == [], "a group with a live helper was released from the owner-death supervisor"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(bridge.pid, signal.SIGKILL)  # windows-footgun: ok — posix-marked file
+        _reap(bridge)

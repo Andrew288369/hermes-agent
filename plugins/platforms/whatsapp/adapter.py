@@ -19,7 +19,7 @@ from gateway.platforms._shared import (
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
 from hermes_cli._subprocess_compat import windows_detach_flags
-from hermes_cli.process_identity import release_process_groups, spawn_owned
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import (find_node_executable, get_hermes_dir, with_hermes_node_path)
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -767,7 +767,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not _IS_WINDOWS and self._bridge_process.poll() is not None:
                 # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
                 # (POSIX only: Windows has no supervised group, and its stop path stays as on main.)
-                release_process_groups([self._bridge_process.pid])
+                release_process_group_once_empty(self._bridge_process.pid, timeout=0)
         if self._bridge_process or not getattr(self, "_runtime_status_platform_key", ""):
             _unlink_quietly(self._session_path / "bridge.pid")
         await cancel_task(self._poll_task)

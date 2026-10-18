@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.verify.recipes import Recipe
-from hermes_cli.process_identity import release_process_groups, spawn_owned
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
@@ -182,7 +182,7 @@ def _run_start_phase(
     finally:
         _terminate_process_group(proc)
         if proc.poll() is not None:
-            release_process_groups([proc.pid])
+            release_process_group_once_empty(proc.pid, proc=proc)
         try:
             output = proc.stdout.read() or "" if proc.stdout is not None else ""
         except (OSError, ValueError):

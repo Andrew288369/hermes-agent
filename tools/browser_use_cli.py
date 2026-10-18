@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
-from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
+from hermes_cli.process_identity import own_process_groups, register_child, release_process_group_once_empty
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
 from utils import is_truthy_value
@@ -633,7 +633,7 @@ def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with i
         with _owned_daemon_groups_lock:
             pgid = _owned_daemon_groups.pop(daemon, None)
         if pgid is not None:
-            release_process_groups([pgid])
+            release_process_group_once_empty(pgid)  # a daemon --reload failed to stop stays covered
 
 
 # Daemon identity (``daemon_identity``: its dirs + BU_NAME) -> process group of the harness daemon this

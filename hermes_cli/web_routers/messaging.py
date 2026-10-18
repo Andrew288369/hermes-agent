@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException
 from gateway.status import resolve_gateway_liveness, retained_gateway_state
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
-from hermes_cli.process_identity import release_process_groups, spawn_owned
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
@@ -441,7 +441,7 @@ def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
                 proc.wait(timeout=3)
     if proc.poll() is not None:
         # Stopped; one we failed to stop stays covered by the owner-death supervisor.
-        release_process_groups([proc.pid])
+        release_process_group_once_empty(proc.pid, proc=proc)
 
 
 def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WHATSAPP_ONBOARDING_TERMINAL_STATUSES) -> None:
@@ -495,7 +495,7 @@ def _watch_whatsapp_pairing(pairing_id: str, proc: subprocess.Popen) -> None:
                 if record.status not in {"cancelled", "expired"}:
                     _apply_pairing_event(record, payload)
         returncode = proc.wait()
-        release_process_groups([proc.pid])
+        release_process_group_once_empty(proc.pid, proc=proc)
     except Exception as exc:
         _fail_whatsapp_pairing(pairing_id, str(exc), proc=proc)
         return

@@ -23,7 +23,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
-from hermes_cli.process_identity import release_process_groups, spawn_owned
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from utils import is_truthy_value
 
 
@@ -233,7 +233,7 @@ def run_command_provider(
             if chunk:
                 chunks[name].append(chunk)
     if proc.poll() is not None:
-        release_process_groups([proc.pid])  # a tree we failed to stop stays covered
+        release_process_group_once_empty(proc.pid, proc=proc)  # a tree we failed to stop stays covered
     stdout, stderr = "".join(chunks["stdout"]), "".join(chunks["stderr"])
     if timed_out:
         raise subprocess.TimeoutExpired(command, timeout, output=stdout, stderr=stderr) from (

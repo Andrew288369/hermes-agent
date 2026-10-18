@@ -40,7 +40,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult, merge_pending_message_event
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import coerce_port, profile_scoped as _profile_scoped
-from hermes_cli.process_identity import release_process_groups, spawn_owned
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 logger = logging.getLogger(__name__)
 
@@ -404,7 +404,7 @@ class RaftAdapter(BasePlatformAdapter):
             logger.exception("[raft] Error stopping bridge")
         if proc.poll() is not None:
             # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
-            release_process_groups([proc.pid])
+            release_process_group_once_empty(proc.pid, proc=proc)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:

@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tools.computer_use import cua_backend_driver as _driver
 from tools.computer_use.permissions import CUA_DRIVER_BUNDLE_ID
-from hermes_cli.process_identity import release_process_groups, spawn_owned
+from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 logger = logging.getLogger("tools.computer_use.cua_backend")
 
@@ -215,7 +215,7 @@ class _EmbeddedCuaDaemon:
                              stderr=subprocess.DEVNULL, env=self._sanitized_env(), swallow=_QUIET_ERRORS)
         if process is not None:
             _wait_or_kill(process)
-            release_process_groups([process.pid])  # stopped it ourselves (a no-op for the macOS `open` launcher)
+            release_process_group_once_empty(process.pid, proc=process)  # stopped it ourselves (a no-op for the macOS `open` launcher)
         if sys.platform != "win32" and os.path.exists(self.socket_path):
             with contextlib.suppress(OSError):
                 os.remove(self.socket_path)
