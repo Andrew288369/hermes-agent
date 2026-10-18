@@ -6,7 +6,7 @@ import asyncio
 import os
 import time
 from typing import Dict, Optional
-from hermes_cli.process_identity import release_process_groups
+from hermes_cli.process_identity import is_owner_death_supervisor, release_process_groups
 from tools.mcp_tool_common import _core
 from tools import mcp_tool_loop as _loop
 
@@ -102,6 +102,8 @@ def _filter_mcp_children(pids: set) -> set:
             argv = psutil.Process(pid).cmdline()
         except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
             continue  # raced away or zombie — cannot be our fresh server, unsafe to track
+        if is_owner_death_supervisor(pid, argv):
+            continue  # the shared reaper of every owned child; MCP teardown must never kill it
         if not any(marker in arg for arg in argv[1:] for marker in _NON_MCP_CHILD_CMDLINE_MARKERS):
             kept.add(pid)
     return kept
