@@ -23,12 +23,14 @@ class ProcessOwnershipMixin:
     def _owns_job(self, persist_on_release: bool) -> bool:
         """Not owned, on purpose: ``persist_on_release`` jobs, which must outlive the agent (#41225);
         every job of a gateway, which re-adopts its jobs from the checkpoint after a crash (flagged by
-        recover_from_checkpoint; a supervised gateway also before it gets there); and Windows, where
-        the layer-3 job object covers ownership."""
+        recover_from_checkpoint; a supervised gateway also before it gets there); every job of a
+        managed worker, a per-turn interpreter whose jobs the next turn's worker adopts with their
+        output log (worker_output_log); and Windows, where the layer-3 job object covers ownership."""
+        from agent.runtime_session_store import is_worker_process
         from tools.process_registry import _IS_WINDOWS, _is_supervised_gateway_process
 
         return not (_IS_WINDOWS or persist_on_release or self._jobs_outlive_host
-                    or _is_supervised_gateway_process())
+                    or is_worker_process() or _is_supervised_gateway_process())
 
     def _spawn_job(self, session: Any, argv: list[str], persist_on_release: bool, **popen_kwargs) -> subprocess.Popen:
         """Start a pipe job in its own session, owned unless ``_owns_job`` says it must outlive us."""

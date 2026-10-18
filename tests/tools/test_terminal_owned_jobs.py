@@ -207,3 +207,16 @@ def test_unowned_jobs_are_never_handed_to_the_supervisor(monkeypatch, tmp_path):
     recovered_host_job = registry.spawn_local("exit 0", cwd=str(tmp_path))
     wait_until(lambda: persisted.exited and recovered_host_job.exited, timeout=15, what="both jobs to exit")
     assert calls == [], calls
+
+
+def test_a_managed_workers_jobs_are_never_handed_to_the_supervisor(monkeypatch, tmp_path):
+    """A managed worker is a per-turn interpreter: the next turn's worker adopts its jobs from the
+    checkpoint and reads their output log, so the jobs must outlive the worker that started them."""
+    from agent import runtime_session_store
+    from tools.process_registry import ProcessRegistry
+
+    calls = _record_calls(monkeypatch)
+    monkeypatch.setattr(runtime_session_store, "_worker_process", True)
+    job = ProcessRegistry().spawn_local("exit 0", cwd=str(tmp_path))
+    wait_until(lambda: job.exited, timeout=15, what="the worker's job to exit")
+    assert calls == [], calls
