@@ -147,11 +147,11 @@ def spawned_by_this_process(pid: int) -> bool:
     the Hermes whose command actually started it: the CLI it ran was given ``spawn_env`` and the
     daemon inherited it. A pid file proves what a process is, not who started it. Fails closed:
     an unreadable environment (another user, a race) is not ours."""
-    try:
-        import psutil
+    import psutil
 
+    try:
         tag = parse_spawn_tag(psutil.Process(int(pid)).environ().get(SPAWN_ENV_VAR))
-    except Exception:
+    except (psutil.Error, OSError):
         return False
     if tag is None or tag.spawner_pid != os.getpid():
         return False
@@ -807,7 +807,7 @@ def stop_owned_group_survivors(pgid: int, *, proc=None, grace: float = 3.0) -> b
     with _supervisor_lock:
         owned = pgid in _supervised_pgids
     if owned:
-        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 1.0)):
+        for sig, wait in ((signal.SIGTERM, grace), (signal.SIGKILL, 1.0)):  # windows-footgun: ok — POSIX-only, returned above
             if release_process_group_once_empty(pgid, proc=proc, timeout=0):
                 return True
             try:

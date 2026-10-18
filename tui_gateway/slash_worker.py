@@ -58,6 +58,7 @@ def _start_legacy_parent_watchdog(parent_pid: int, *, poll_s: float = 2.0, grace
             time.sleep(0.05)
         os._exit(0)
 
+    # health: allow HX012 -- the loop only reads getppid() and calls os._exit; no profile-scoped state
     threading.Thread(target=_loop, daemon=True, name="slash-legacy-parent-watchdog").start()
 
 

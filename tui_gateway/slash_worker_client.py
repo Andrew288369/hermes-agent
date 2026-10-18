@@ -175,7 +175,7 @@ def _stop_worker_group(proc) -> None:
     # that already died leaves its group to the owner-death supervisor rather than risk signalling
     # a recycled pgid.
     if proc.poll() is None:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
+        for sig in (signal.SIGTERM, signal.SIGKILL):  # windows-footgun: ok — POSIX-only, Windows returned above
             # Members that outlive the leader keep the group (and its number) alive.
             with contextlib.suppress(OSError):
                 os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only, Windows returned above
