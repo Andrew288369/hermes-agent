@@ -22,6 +22,8 @@
 
 trap '' INT HUP  # a dying parent's SIGINT/SIGHUP must not preempt the reap: EOF is the only signal
 parent=$1
+# Every register line compares against it: a bad value would silently refuse every registration.
+case $parent in ''|*[!0-9]*) echo "hermes process supervisor: bad parent pgid '$parent'; refusing to run" >&2; exit 2 ;; esac
 # Run inside the parent's group, a killpg of the parent would take us down before we reap.
 kill -0 -$$ 2>/dev/null || {
   echo "hermes process supervisor: not a process-group leader; refusing to run" >&2

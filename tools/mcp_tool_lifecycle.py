@@ -78,8 +78,9 @@ def _snapshot_child_pids() -> set:
 
 
 # argv markers of non-MCP gateway children that can race into the snapshot delta during an
-# MCP spawn (defense-in-depth; LSP/slash_worker already use start_new_session). Matched against
-# argv[1:] because Python/Java children start with the interpreter path.
+# MCP spawn (defense-in-depth: LSP servers and the slash worker lead their own groups under the
+# owner-death supervisor, see spawn_owned). Matched against argv[1:] because Python/Java children
+# start with the interpreter path.
 _NON_MCP_CHILD_CMDLINE_MARKERS: tuple[str, ...] = (
     "tui_gateway.slash_worker", "tui_gateway.entry",
     "-dorg.eclipse.equinox.launcher", "eclipse.jdt.ls", "org.eclipse.equinox.launcher_",  # jdtls

@@ -816,3 +816,11 @@ def test_no_pgids_is_a_no_op(monkeypatch):
     process_identity.own_process_groups([])
 
     assert spawned == []
+
+
+@pytest.mark.parametrize("parent", ["", "12x"])
+def test_the_supervisor_refuses_a_malformed_parent_pgid(parent):
+    """Every register line is compared with it, so a bad value would silently refuse them all."""
+    run = subprocess.run([process_identity._POSIX_SH, str(process_identity._SUPERVISOR_SCRIPT), parent],
+                         input="", capture_output=True, text=True, timeout=10, check=False)
+    assert run.returncode == 2 and "bad parent pgid" in run.stderr
