@@ -12,7 +12,6 @@ Hermes process that reaps the owned children's process groups the moment Hermes 
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
@@ -796,30 +795,6 @@ def release_process_group_once_empty(pgid: int, *, proc=None, timeout: float = 1
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.05)
-
-
-@contextlib.contextmanager
-def registering_meanwhile(register, *, every: float = 0.5):
-    """Run ``register()`` every ``every`` seconds on a helper thread while the block runs, so a detached
-    daemon a long-running command starts (a browser daemon on the first command, while it navigates or
-    runs user code) reaches the supervisor while that command still runs, not only once it returns."""
-    done = threading.Event()
-
-    def loop():
-        while not done.wait(every):
-            try:
-                register()
-            except Exception:  # best-effort; the caller registers again once the command returns
-                logger.debug("owned-daemon registration during a command failed", exc_info=True)
-
-    # health: allow HX012 -- register() resolves its target from arguments it closed over, not from profile scope
-    worker = threading.Thread(target=loop, name="owned-daemon-registrar", daemon=True)
-    worker.start()
-    try:
-        yield
-    finally:
-        done.set()
-        worker.join(timeout=5)  # never two registrations racing: the caller's own runs next
 
 
 def stop_owned_group_survivors(pgid: int, *, proc=None, grace: float = 3.0) -> bool:

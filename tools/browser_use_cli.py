@@ -24,8 +24,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
 from hermes_cli.process_identity import (
-    own_process_groups, register_child, registering_meanwhile, release_process_group_once_empty, spawn_env,
-    spawned_by_this_process)
+    own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
 from tools.browser_harness_dirs import daemon_env, daemon_identity, harness_pid_file, namespace_harness_dirs
 from utils import is_truthy_value
@@ -602,6 +601,8 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+# How often a running browser_exec re-checks for the daemon its first call starts.
+_OWN_DURING_CALL_S = 0.5
 # Harness daemons this process drove: each latches BU_CDP_* at start and outlives every call, so a backend
 # swap (/browser connect|disconnect) leaves later calls in the old browser until these are stopped.
 _driven_daemons: dict[tuple[str, ...], str] = {}  # daemon identity -> home
@@ -830,11 +831,12 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         with _driven_daemons_lock:
             daemon = daemon_identity(env)
             _driven_daemons[daemon] = hermes_home_key()
+        # The first call starts the daemon and may run long (navigation, user code): own it as soon as
+        # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
+        from agent.periodic_scheduler import schedule
+        owning = schedule(lambda: _own_harness_daemon(env), _OWN_DURING_CALL_S)
         try:
-            # The first call starts the daemon and may run long (navigation, user code): own it as
-            # soon as it publishes its pid, so a Hermes killed mid-call takes it along.
-            with registering_meanwhile(lambda: _own_harness_daemon(env)):
-                return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
+            return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
             return {"error_result": tool_error(
                 f"browser-use exec timed out after {timeout}s. The daemon may still be working; retry "
@@ -843,6 +845,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             )}
         except OSError as e:
             return {"error_result": tool_error(f"Failed to launch browser-use CLI: {e}")}
+        finally:
+            owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
 
     if bot_desktop_browser:
         from tools.browser_session import run_fenced
