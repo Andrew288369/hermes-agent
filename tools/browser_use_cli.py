@@ -625,6 +625,18 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
     _reload_daemons(daemons)
 
 
+def stop_owned_harness_daemons() -> None:
+    """Stop only the harness daemons this process owns (``_owned_daemon_groups``: started by its own
+    commands). The exit path uses this: a daemon another live Hermes started on the same name was
+    driven here too, but it is that Hermes's to stop."""
+    with _owned_daemon_groups_lock:
+        owned = sorted(_owned_daemon_groups)
+    with _driven_daemons_lock:
+        for key in owned:
+            _driven_daemons.pop(key, None)
+    _reload_daemons(owned)
+
+
 def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
     cmd = _find_cli() if daemons else None
     if not cmd:

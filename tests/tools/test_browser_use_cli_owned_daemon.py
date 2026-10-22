@@ -109,6 +109,31 @@ def test_stopping_the_daemons_releases_their_groups(monkeypatch, registered):
     assert browser_use_cli._owned_daemon_groups == {}
 
 
+def test_the_exit_path_stops_only_the_daemons_this_process_owns(monkeypatch, registered):
+    ours = browser_use_cli.daemon_identity({"BU_NAME": "ours"})
+    theirs = browser_use_cli.daemon_identity({"BU_NAME": "theirs"})  # another live Hermes started it
+    browser_use_cli._owned_daemon_groups.update({ours: 4242})
+    monkeypatch.setattr(browser_use_cli, "_driven_daemons", {ours: "home", theirs: "home"})
+    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
+    monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
+    reloaded = []
+    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group",
+                        lambda cmd, code, env, timeout: reloaded.append(env["BU_NAME"]))
+
+    from tools import browser_tool_lifecycle
+    from tools.browser_tool_origin import origin
+    monkeypatch.setattr(origin, "_cleanup_done", False)
+    monkeypatch.setattr(origin, "_active_sessions", {})
+    for step in ("_stop_all_lightpanda", "_reap_orphaned_browser_sessions"):
+        monkeypatch.setattr(browser_tool_lifecycle, step, lambda: None)
+    monkeypatch.setattr(browser_tool_lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
+
+    browser_tool_lifecycle._emergency_cleanup_all_sessions()  # the atexit handler
+
+    assert reloaded == ["ours"]
+    assert browser_use_cli._driven_daemons == {theirs: "home"}
+
+
 # The daemon reparents to init once its owner dies, so cleanup leaves this test's subtree.
 @pytest.mark.live_system_guard_bypass
 def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
