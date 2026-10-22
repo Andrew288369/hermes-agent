@@ -839,6 +839,14 @@ def spawn_owned(argv, *, purpose: str, **popen_kwargs) -> subprocess.Popen:
     return proc
 
 
+def _reap_in_background(proc) -> None:
+    """Reap an exiting supervisor off the caller's thread. A timed ``Popen.wait`` polls with sleeps
+    (~27 ms per release on macOS), and leaving it unreaped keeps a zombie child that psutil walkers of this
+    process's children trip on; an untimed ``wait()`` blocks in waitpid and returns the moment it exits."""
+    # health: allow HX012 -- the thread only waitpid()s a child that is exiting; no profile-scoped state
+    threading.Thread(target=proc.wait, name="owner-death-supervisor-reaper", daemon=True).start()
+
+
 def _update_supervised_pgids(verb: str, pgids) -> None:
     """Send ``register``/``unregister`` for ``pgids`` to this process's supervisor. Failures are
     swallowed: losing the safety net must never fail a live child."""
@@ -885,6 +893,7 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
             # It exited between poll() and write(). Drop it so the next call respawns and replays
             # from ``_supervised_pgids`` (the set, not the pipe, is the record of what to reap).
             _supervisor = None
+            _reap_in_background(proc)
             return
 
         if not _supervised_pgids:
@@ -896,8 +905,4 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
             except (BrokenPipeError, ValueError, OSError):
                 pass
             _supervisor = None
-            # Reap it off the caller's thread: a timed Popen.wait polls with sleeps (~25 ms per
-            # release), and leaving it unreaped keeps a zombie child that psutil walkers trip on. An
-            # untimed wait() blocks in waitpid and returns the moment it exits.
-            # health: allow HX012 -- the thread only waitpid()s a child that is exiting; no profile-scoped state
-            threading.Thread(target=proc.wait, name="owner-death-supervisor-reaper", daemon=True).start()
+            _reap_in_background(proc)

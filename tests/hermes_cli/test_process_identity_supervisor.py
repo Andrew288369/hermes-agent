@@ -13,6 +13,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -357,6 +358,7 @@ class _FakeSupervisor:
         return 1 if self._exited else None
 
     def wait(self, timeout=None):
+        self.waited_on = threading.current_thread()
         self.waited = True
         return 0
 
@@ -446,6 +448,7 @@ def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_gr
     assert spawned[0].closed, "supervisor kept resident with nothing left to reap"
     wait_until(lambda: getattr(spawned[0], "waited", False), timeout=10,
                what="the released supervisor to be reaped (a zombie until the next Popen otherwise)")
+    assert spawned[0].waited_on is not threading.current_thread(), "the release blocked on the supervisor's exit"
     assert spawned[0].lines()[-1] == "unregister 222", "release happened before the last unregister was sent"
     assert process_identity._supervisor is None
 
@@ -531,13 +534,15 @@ def test_a_broken_pipe_never_propagates_into_a_live_child(monkeypatch, all_group
 
             self.stdin = _Stdin()
 
-    monkeypatch.setattr(process_identity, "_spawn_supervisor", _BrokenPipe)
+    spawned = []
+    monkeypatch.setattr(process_identity, "_spawn_supervisor", lambda: spawned.append(_BrokenPipe()) or spawned[-1])
 
     process_identity.own_process_groups([111])  # must not raise
 
     # Dropped, so the next registration respawns instead of writing into a
-    # pipe that is known to be dead.
+    # pipe that is known to be dead; and reaped, so it is not left a zombie.
     assert process_identity._supervisor is None
+    wait_until(lambda: getattr(spawned[0], "waited", False), timeout=10, what="the dead supervisor to be reaped")
 
 
 def test_unregister_after_a_broken_pipe_rebuilds_coverage_for_survivors(monkeypatch, all_groups_alive):
