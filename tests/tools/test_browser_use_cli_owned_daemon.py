@@ -130,13 +130,23 @@ def test_stopping_the_daemons_releases_their_groups(monkeypatch, registered):
     assert browser_use_cli._owned_daemon_groups == {}
 
 
-def test_the_exit_path_stops_only_the_daemons_this_process_owns(monkeypatch, registered):
-    ours = browser_use_cli.daemon_identity({"BU_NAME": "ours"})
-    theirs = browser_use_cli.daemon_identity({"BU_NAME": "theirs"})  # another live Hermes started it
+def _shared_runtime(tmp_path) -> tuple[Path, dict]:
+    """A runtime dir shared between names (``bu-<BU_NAME>.pid``) and the env naming it, so a daemon
+    identity built from that env carries the dir."""
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    return runtime, {"BH_RUNTIME_DIR": str(runtime), "BH_RUNTIME_DIR_SHARED": "1"}
+
+
+def test_the_exit_path_stops_only_the_daemons_this_process_owns(monkeypatch, tmp_path, registered):
+    runtime, dirs = _shared_runtime(tmp_path)
+    ours = browser_use_cli.daemon_identity({**dirs, "BU_NAME": "ours"})
+    theirs = browser_use_cli.daemon_identity({**dirs, "BU_NAME": "theirs"})  # another live Hermes started it
     browser_use_cli._owned_daemon_groups.update({ours: 4242})
     monkeypatch.setattr(browser_use_cli, "_driven_daemons", {ours: "home", theirs: "home"})
     monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
     monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
+    _publish(runtime, "bu-ours", 4242)
     reloaded = []
     monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group",
                         lambda cmd, code, env, timeout: reloaded.append(env["BU_NAME"]))
@@ -152,6 +162,36 @@ def test_the_exit_path_stops_only_the_daemons_this_process_owns(monkeypatch, reg
     browser_tool_lifecycle._emergency_cleanup_all_sessions()  # the atexit handler
     assert reloaded == ["ours"]
     assert browser_use_cli._driven_daemons == {theirs: "home"}
+
+
+def test_exit_never_reloads_a_name_another_hermes_republished_after_ours_exited(monkeypatch, tmp_path, registered):
+    """--reload goes by name: once our daemon exited and another live Hermes started its replacement
+    under the same name, exiting here must leave that replacement running and just release ours."""
+    runtime, dirs = _shared_runtime(tmp_path)
+    ours = browser_use_cli.daemon_identity({**dirs, "BU_NAME": "work"})
+    browser_use_cli._owned_daemon_groups.update({ours: 4242})
+    monkeypatch.setattr(browser_use_cli, "_driven_daemons", {ours: "home"})
+    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
+    monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
+    _publish(runtime, "bu-work", 4242)
+    reloaded = []
+    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group",
+                        lambda cmd, code, env, timeout: reloaded.append(env["BU_NAME"]))
+    with monkeypatch.context() as m:  # control: while the name still publishes our pid, it is reloaded
+        m.setattr(browser_use_cli, "_owned_daemon_groups", {ours: 4242})
+        m.setattr(browser_use_cli, "_driven_daemons", {})
+        browser_use_cli.stop_owned_harness_daemons()
+    assert reloaded == ["work"]
+    registered.clear()
+
+    _publish(runtime, "bu-work", 5151)  # ours exited; the other Hermes's daemon now holds the name
+    reloaded.clear()
+
+    browser_use_cli.stop_owned_harness_daemons()
+
+    assert reloaded == []
+    assert registered == [("unregister", [4242])]
+    assert browser_use_cli._owned_daemon_groups == {}
 
 
 # The daemon reparents to init once its owner dies, so cleanup leaves this test's subtree.
