@@ -262,3 +262,38 @@ def test_a_daemon_another_live_hermes_started_on_the_same_name_is_never_register
         daemon.wait(timeout=10)
         other_hermes.stdin.close()
         other_hermes.wait(timeout=10)
+
+
+def test_a_long_first_browser_exec_owns_its_daemon_before_the_call_returns(monkeypatch):
+    """The first call starts the daemon and may run for minutes (navigation, user code). Its daemon
+    must reach the supervisor during the call, or a Hermes killed mid-call leaves it running."""
+    import threading
+    from tools import browser_tool_cloud as cloud
+    from tools import browser_tool_session as session
+
+    owned_during_call = threading.Event()
+    running = threading.Event()
+    monkeypatch.setattr(browser_use_cli, "_own_harness_daemon",
+                        lambda env: running.is_set() and owned_during_call.set())
+
+    def run_cli(*_args):
+        running.set()
+        owned_during_call.wait(10)  # the CLI is still "running" until the daemon was owned
+        running.clear()
+        return subprocess.CompletedProcess([], 0, "ok", "")
+
+    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-use"])
+    monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
+    monkeypatch.setattr(browser_use_cli, "_real_profile_consented", lambda: False)
+    monkeypatch.setattr(browser_use_cli, "_resolve_lightpanda_cdp", lambda *a: None)
+    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
+    monkeypatch.setattr("tools.browser_tool._get_open_command_timeout", lambda **_kw: 5)
+    monkeypatch.setattr(cloud, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_kw: {
+        "success": True, "data": {"cdpUrl": "http://127.0.0.1:9222"}})
+    monkeypatch.setattr(browser_use_cli, "_attach_vault_supervisor", lambda *a: None)
+    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group", run_cli)
+    monkeypatch.setattr(browser_use_cli, "_driven_daemons", {})
+
+    browser_use_cli.browser_exec("print(page_info())", task_id="long-first-call")
+    assert owned_during_call.is_set(), "the daemon was only owned after the CLI call returned"

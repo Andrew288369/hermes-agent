@@ -843,3 +843,23 @@ def test_a_released_supervisor_leaves_no_zombie_child():
     finally:
         _kill(child.pid)
         child.wait(timeout=10)
+
+
+def test_registering_meanwhile_runs_while_the_block_runs_and_stops_with_it():
+    """A long first browser command must hand its daemon over while it still runs; nothing may
+    register after the block exits (the caller's own registration runs next, never concurrently)."""
+    calls = []
+    with process_identity.registering_meanwhile(lambda: calls.append(time.monotonic()), every=0.05):
+        wait_until(lambda: len(calls) >= 2, timeout=10, what="registrations during the block")
+    after = len(calls)
+    time.sleep(0.2)  # health: allow HX013 -- the absence of calls over 4 intervals IS the behaviour under test
+    assert len(calls) == after, "kept registering after the block exited"
+
+    failures = []
+
+    def boom():
+        failures.append(1)
+        raise OSError("pid file vanished")
+
+    with process_identity.registering_meanwhile(boom, every=0.01):  # best-effort: never raises out
+        wait_until(lambda: len(failures) >= 2, timeout=10, what="registration retried after a failure")
