@@ -713,6 +713,9 @@ _supervisor_lock = threading.Lock()
 # Groups the supervisor is reaping on our behalf; replayed verbatim on respawn so a respawn never
 # silently drops coverage for children that are still running.
 _supervised_pgids: set = set()
+# Released supervisors still exiting: polled (reaped) on the next registration change instead of
+# waited on, so a release never blocks the caller (a foreground command released its group each run).
+_retired_supervisors: list = []
 _SUPERVISOR_SCRIPT = Path(__file__).with_name("process_supervisor.sh")
 # Android (Termux) has no /bin/sh; its system shell is the same POSIX sh the script needs.
 _POSIX_SH = "/bin/sh" if os.path.exists("/bin/sh") else "/system/bin/sh"
@@ -850,6 +853,7 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
 
     global _supervisor
     with _supervisor_lock:
+        _retired_supervisors[:] = [old for old in _retired_supervisors if old.poll() is None]
         if verb == "register":
             _supervised_pgids.update(wanted)
         else:
@@ -895,9 +899,7 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
                 proc.stdin.close()
             except (BrokenPipeError, ValueError, OSError):
                 pass
-            # Reap it, or the exited supervisor stays a zombie until the next Popen in this process.
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                logger.warning("owner-death supervisor pid %s did not exit 5 s after release", proc.pid)
+            # Reaped by the next registration change's poll(), not waited on here: Popen.wait polls
+            # with sleeps, which cost every release ~25 ms.
+            _retired_supervisors.append(proc)
             _supervisor = None

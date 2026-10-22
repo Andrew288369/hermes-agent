@@ -371,6 +371,7 @@ def _reset_client_state():
     yield
     process_identity._supervisor = None
     process_identity._supervised_pgids.clear()
+    process_identity._retired_supervisors.clear()
 
 
 @pytest.fixture
@@ -444,12 +445,14 @@ def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_gr
 
     process_identity.release_process_groups([222])
     assert spawned[0].closed, "supervisor kept resident with nothing left to reap"
-    assert getattr(spawned[0], "waited", False), "released supervisor was never wait()ed -> zombie until the next Popen"
+    assert not getattr(spawned[0], "waited", False), "a release must not block on the exiting supervisor"
     assert spawned[0].lines()[-1] == "unregister 222", "release happened before the last unregister was sent"
     assert process_identity._supervisor is None
 
+    spawned[0]._exited = True
     process_identity.own_process_groups([333])
     assert len(spawned) == 2 and spawned[1].lines() == ["register 333"]
+    assert process_identity._retired_supervisors == [], "the exited supervisor was never reaped"
 
 
 def test_supervisor_survives_the_real_eof_release():
