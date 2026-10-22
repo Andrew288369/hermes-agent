@@ -16,7 +16,6 @@ import importlib.util
 import inspect
 import logging
 import os
-import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -24,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
-from tools.mcp_tool_config import _get_mcp_stderr_log, _npx_cached_bin, _packaged_npx_entry
+from tools.mcp_tool_config import _npx_cached_bin, _packaged_npx_entry
 from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
 from tools.mcp_tool_transport import MCPServerTransportMixin
 from tools.mcp_tool_server_run import MCPServerRunMixin

@@ -619,7 +619,6 @@ def _stdio_connection(child_pid, fake_supervisor):
             side_effect=[set(), {child_pid}],
         ),
         patch("tools.mcp_tool_config._write_stderr_log_header"),
-        patch("tools.mcp_tool._get_mcp_stderr_log", return_value=None),
         patch(
             "hermes_cli.process_identity._spawn_supervisor",
             return_value=fake_supervisor,
