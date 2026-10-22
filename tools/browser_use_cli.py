@@ -627,8 +627,12 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
 
 def stop_owned_harness_daemons() -> None:
     """Stop only the harness daemons this process owns (``_owned_daemon_groups``: started by its own
-    commands). The exit path uses this: a daemon another live Hermes started on the same name was
-    driven here too, but it is that Hermes's to stop."""
+    commands). The exit handler uses this: a daemon another live Hermes started on the same name was
+    driven here too, but it is that Hermes's to stop. Windows records no ownership (``_own_harness_daemon``
+    is POSIX-only), so there every driven daemon is stopped, as before."""
+    if os.name != "posix":
+        stop_harness_daemons()
+        return
     with _owned_daemon_groups_lock:
         owned = sorted(_owned_daemon_groups)
     with _driven_daemons_lock:

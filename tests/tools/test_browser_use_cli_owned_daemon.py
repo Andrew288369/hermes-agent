@@ -22,7 +22,7 @@ from tools import browser_use_cli
 def _group_alive(pgid: int) -> bool:
     try:
         os.killpg(pgid, 0)  # windows-footgun: ok — posix-marked test
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):  # macOS: EPERM for a group left with only zombies
         return False
     return True
 
@@ -92,10 +92,12 @@ def test_an_owned_harness_daemon_is_not_re_verified_and_a_replacement_releases_t
     browser_use_cli._own_harness_daemon(env)  # steady state: one pid-file read
     assert registered == [("register", [proc.pid])]
 
-    browser_use_cli._owned_daemon_groups[browser_use_cli.daemon_identity(env)] = 4242  # an earlier daemon
+    earlier = subprocess.Popen([sys.executable, "-c", ""], stdin=subprocess.DEVNULL, start_new_session=True)
+    earlier.wait(timeout=10)  # an earlier daemon of this identity, gone: its group is empty
+    browser_use_cli._owned_daemon_groups[browser_use_cli.daemon_identity(env)] = earlier.pid
     monkeypatch.setattr(browser_use_cli, "spawned_by_this_process", lambda pid: True)
     browser_use_cli._own_harness_daemon(env)
-    assert registered[1:] == [("register", [proc.pid]), ("unregister", [4242])]
+    assert registered[1:] == [("register", [proc.pid]), ("unregister", [earlier.pid])]
 
 
 def test_a_pid_file_naming_something_else_is_never_registered(tmp_path, registered):
@@ -148,7 +150,6 @@ def test_the_exit_path_stops_only_the_daemons_this_process_owns(monkeypatch, reg
     monkeypatch.setattr(browser_tool_lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
 
     browser_tool_lifecycle._emergency_cleanup_all_sessions()  # the atexit handler
-
     assert reloaded == ["ours"]
     assert browser_use_cli._driven_daemons == {theirs: "home"}
 
@@ -188,7 +189,7 @@ def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
         if daemon_pid is not None:
             try:
                 os.killpg(daemon_pid, 9)  # windows-footgun: ok — posix-marked test
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
         if owner.poll() is None:
             owner.kill()
