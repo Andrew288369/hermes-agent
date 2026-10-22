@@ -12,7 +12,9 @@ per-process owner-death supervisor.
 Flags, in Python files of the production trees (tests, evals, scripts and nix checks excluded):
 
   start_new_session=True / start_new_session=<anything but False>, or a ``"start_new_session"``
-  dict key with a non-False value
+  dict key / ``kwargs["start_new_session"] = ...`` item with a non-False value
+  process_group=<anything but None> (``process_group=0`` puts the child in a new group), in the
+  same three shapes
   any reference to os.setsid / os.setpgid / os.setpgrp (call or ``preexec_fn=os.setsid``)
   a call to ``windows_detach_popen_kwargs()`` (``start_new_session=True`` on POSIX)
 
@@ -48,11 +50,19 @@ _DETACH_OS_ATTRS = {"setsid", "setpgid", "setpgrp"}
 # Helpers that return detaching Popen kwargs (``start_new_session=True`` on POSIX).
 _DETACH_HELPERS = {"windows_detach_popen_kwargs"}
 # Cheap text prefilter: only files mentioning one of these are parsed.
-_NEEDLES = ("start_new_session", "setsid", "setpgid", "setpgrp", *_DETACH_HELPERS)
+_NEEDLES = ("start_new_session", "process_group", "setsid", "setpgid", "setpgrp", *_DETACH_HELPERS)
 
 
 def _is_false(node: ast.AST) -> bool:
     return isinstance(node, ast.Constant) and node.value in (False, None, 0)
+
+
+def _detaches(name: object, value: ast.AST) -> bool:
+    """Whether Popen keyword ``name`` set to ``value`` detaches the child into its own group."""
+    if name == "start_new_session":
+        return not _is_false(value)
+    # process_group=0 is a new group; only the default (None) leaves the child in ours.
+    return name == "process_group" and not (isinstance(value, ast.Constant) and value.value is None)
 
 
 def _is_os_detach(node: ast.AST) -> bool:
@@ -75,12 +85,17 @@ def detach_lines(text: str) -> list[int]:
         return []
     lines: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.keyword) and node.arg == "start_new_session" and not _is_false(node.value):
+        if isinstance(node, ast.keyword) and _detaches(node.arg, node.value):
             lines.add(node.value.lineno)
         elif isinstance(node, ast.Dict):
             for key, value in zip(node.keys, node.values):
-                if isinstance(key, ast.Constant) and key.value == "start_new_session" and not _is_false(value):
+                if isinstance(key, ast.Constant) and _detaches(key.value, value):
                     lines.add(key.lineno)
+        elif isinstance(node, ast.Assign):  # kwargs["start_new_session"] = True
+            for target in node.targets:
+                if (isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant)
+                        and _detaches(target.slice.value, node.value)):
+                    lines.add(target.lineno)
         elif _is_os_detach(node) or _is_detach_helper_call(node):
             lines.add(node.lineno)
     return sorted(lines)
