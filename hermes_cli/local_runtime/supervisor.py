@@ -278,6 +278,9 @@ class LlamaServerSupervisor:
                 with self._lifecycle_lock:
                     if self._stopping:
                         return
+                    # The crashed router's group: stop what is left of it and release its number
+                    # before the replacement registers its own (survivors stay covered).
+                    stop_owned_group_survivors(proc.pid, proc=proc)
                     self._reap_orphaned_children()
                     self._spawn()
                 self._wait_health(120)

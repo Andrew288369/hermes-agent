@@ -142,3 +142,36 @@ def test_stop_after_a_router_crash_still_stops_its_surviving_model_child(monkeyp
         with contextlib.suppress(ProcessLookupError):
             os.killpg(pgid, 9)  # windows-footgun: ok — posix-marked test
         process_identity.release_process_groups([pgid])
+
+
+def test_a_crash_restart_stops_the_old_routers_survivors_and_releases_its_group(monkeypatch, tmp_path):
+    """The watcher restarts a crashed router: the old group's model child must not outlive the restart."""
+    from hermes_cli import process_identity
+    from hermes_cli.local_runtime import supervisor
+
+    monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
+    monkeypatch.setattr(supervisor, "_RESTART_BACKOFF_S", (0,))
+    sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59996)
+    monkeypatch.setattr(sup, "_reap_orphaned_children", lambda: None)
+    monkeypatch.setattr(sup, "_wait_health", lambda timeout: None)
+    monkeypatch.setattr(sup, "_spawn", lambda: setattr(sup, "proc", None))  # the replacement; ends the watch
+    receipt = tmp_path / "model.pid"
+    old = subprocess.Popen(  # detached-spawn: ok — test router stand-in; its group is killed below
+        [sys.executable, "-c",
+         "import subprocess, sys; c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']);"
+         f" open({str(receipt)!r}, 'w').write(str(c.pid))"],
+        stdin=subprocess.DEVNULL, start_new_session=True)
+    process_identity.own_process_groups([old.pid])
+    try:
+        old.wait(timeout=30)  # the router crashed; its model child is still in its group
+        model = psutil.Process(int(wait_until(lambda: receipt.exists() and receipt.read_text(encoding="utf-8"),
+                                              what="model child receipt")))
+        sup.proc = old
+        sup._watch()
+        wait_until(lambda: not model.is_running() or model.status() == psutil.STATUS_ZOMBIE, timeout=10,
+                   what="the restart to stop the crashed router's surviving model child")
+        assert old.pid not in process_identity._supervised_pgids
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(old.pid, 9)  # windows-footgun: ok — posix-marked test
+        process_identity.release_process_groups([old.pid])
