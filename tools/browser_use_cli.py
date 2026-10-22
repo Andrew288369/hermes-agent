@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.browser_harness_dirs import daemon_env, daemon_identity, namespace_harness_dirs
+from tools.browser_harness_dirs import daemon_env, daemon_identity, harness_pid_file, namespace_harness_dirs
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -663,29 +663,22 @@ _owned_daemon_groups_lock = threading.Lock()
 def _own_harness_daemon(env: dict) -> None:
     """Hand the daemon behind ``env``'s BU_NAME to the owner-death supervisor.
 
-    The harness publishes its daemon pid in ``<runtime dir>/bu-<name>.pid`` (JSON ``{"pid", "started"}``
-    or a bare pid). The daemon is accepted only while it is this user's live ``browser_harness.daemon``
-    leading its own session, so a stale or planted pid file can never hand a stranger's group to the
-    supervisor."""
+    The harness publishes its daemon pid in its runtime dir (``harness_pid_file``: JSON
+    ``{"pid", "started"}`` or a bare pid). The daemon is accepted only while it is this user's live
+    ``browser_harness.daemon`` leading its own session and its spawn tag names this process, so a
+    stale or planted pid file, or a daemon another Hermes started, never reaches the supervisor.
+    Runs after every browser_exec: a pid already owned for this daemon costs one file read."""
     if os.name != "posix":
         return  # Windows: the harness daemon is outside this process's job; nothing to register.
     import psutil
 
-    # Where the daemon's pid file lives, resolved from the env the CLI ran with (a profile scope can
-    # differ from os.environ) the way browser_harness.paths / _ipc resolve it.
-    name = env.get("BU_NAME", "default")
-    isolated = env.get("BH_RUNTIME_DIR") or env.get("BH_TMP_DIR")
-    home = env.get("BH_HOME") or env.get("BROWSER_HARNESS_HOME")
-    if isolated:
-        runtime = Path(isolated).expanduser()
-    elif home:
-        runtime = Path(home).expanduser() / "runtime"
-    else:
-        runtime = Path(env.get("XDG_CONFIG_HOME") or Path.home() / ".config").expanduser() / "browser-harness" / "runtime"
-    stem = "bu" if isolated and env.get("BH_RUNTIME_DIR_SHARED") != "1" else f"bu-{name}"
+    daemon = daemon_identity(env)
     try:
-        raw = (runtime / f"{stem}.pid").read_text(encoding="utf-8-sig").strip()
+        raw = harness_pid_file(env).read_text(encoding="utf-8-sig").strip()
         pid = int(json.loads(raw)["pid"]) if raw.startswith("{") else int(raw.split()[0])
+        with _owned_daemon_groups_lock:
+            if _owned_daemon_groups.get(daemon) == pid:
+                return
         proc = psutil.Process(pid)
         argv = proc.cmdline()
         if (os.getsid(pid) != pid or proc.uids().real != os.getuid()  # windows-footgun: ok — posix-only, returned above
@@ -694,15 +687,15 @@ def _own_harness_daemon(env: dict) -> None:
         if not spawned_by_this_process(pid):
             return  # another Hermes on the same BU_NAME started it: that Hermes owns it
     except (OSError, ValueError, KeyError, TypeError, IndexError, psutil.Error) as exc:
-        logger.debug("browser_exec: no harness daemon to supervise for %s: %s", name, exc)
+        logger.debug("browser_exec: no harness daemon to supervise for %s: %s", daemon[-1], exc)
         return
-    daemon = daemon_identity(env)
     with _owned_daemon_groups_lock:
-        if _owned_daemon_groups.get(daemon) == pid:
-            return
+        replaced = _owned_daemon_groups.get(daemon)
         _owned_daemon_groups[daemon] = pid
     own_process_groups([pid])
     register_child(pid, "browser-harness-daemon")
+    if replaced is not None:
+        release_process_group_once_empty(replaced, timeout=0)  # the daemon it replaced; a survivor stays covered
 
 
 def _route_exec(env: dict, session: str, task_id: Optional[str], local: bool, local_sidecar: bool,

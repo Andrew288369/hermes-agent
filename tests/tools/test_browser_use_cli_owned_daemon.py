@@ -79,6 +79,25 @@ def test_the_driven_daemon_is_handed_to_the_supervisor_once(fake_daemon, registe
     assert registered == [("register", [proc.pid])]
 
 
+def test_an_owned_harness_daemon_is_not_re_verified_and_a_replacement_releases_the_old_group(
+        fake_daemon, registered, monkeypatch):
+    proc, runtime = fake_daemon
+    _publish(runtime, "bu", proc.pid)
+    env = {"BH_RUNTIME_DIR": str(runtime), "BU_NAME": "work"}
+    browser_use_cli._own_harness_daemon(env)
+
+    def _never(*_a):
+        raise AssertionError("an already-owned daemon was re-verified")
+    monkeypatch.setattr(browser_use_cli, "spawned_by_this_process", _never)
+    browser_use_cli._own_harness_daemon(env)  # steady state: one pid-file read
+    assert registered == [("register", [proc.pid])]
+
+    browser_use_cli._owned_daemon_groups[browser_use_cli.daemon_identity(env)] = 4242  # an earlier daemon
+    monkeypatch.setattr(browser_use_cli, "spawned_by_this_process", lambda pid: True)
+    browser_use_cli._own_harness_daemon(env)
+    assert registered[1:] == [("register", [proc.pid]), ("unregister", [4242])]
+
+
 def test_a_pid_file_naming_something_else_is_never_registered(tmp_path, registered):
     runtime = tmp_path / "runtime"
     runtime.mkdir()
