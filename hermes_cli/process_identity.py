@@ -713,9 +713,6 @@ _supervisor_lock = threading.Lock()
 # Groups the supervisor is reaping on our behalf; replayed verbatim on respawn so a respawn never
 # silently drops coverage for children that are still running.
 _supervised_pgids: set = set()
-# Released supervisors still exiting: polled (reaped) on the next registration change instead of
-# waited on, so a release never blocks the caller (a foreground command released its group each run).
-_retired_supervisors: list = []
 _SUPERVISOR_SCRIPT = Path(__file__).with_name("process_supervisor.sh")
 # Android (Termux) has no /bin/sh; its system shell is the same POSIX sh the script needs.
 _POSIX_SH = "/bin/sh" if os.path.exists("/bin/sh") else "/system/bin/sh"
@@ -853,7 +850,6 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
 
     global _supervisor
     with _supervisor_lock:
-        _retired_supervisors[:] = [old for old in _retired_supervisors if old.poll() is None]
         if verb == "register":
             _supervised_pgids.update(wanted)
         else:
@@ -899,7 +895,9 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
                 proc.stdin.close()
             except (BrokenPipeError, ValueError, OSError):
                 pass
-            # Reaped by the next registration change's poll(), not waited on here: Popen.wait polls
-            # with sleeps, which cost every release ~25 ms.
-            _retired_supervisors.append(proc)
             _supervisor = None
+            # Reap it off the caller's thread: a timed Popen.wait polls with sleeps (~25 ms per
+            # release), and leaving it unreaped keeps a zombie child that psutil walkers trip on. An
+            # untimed wait() blocks in waitpid and returns the moment it exits.
+            # health: allow HX012 -- the thread only waitpid()s a child that is exiting; no profile-scoped state
+            threading.Thread(target=proc.wait, name="owner-death-supervisor-reaper", daemon=True).start()

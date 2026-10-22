@@ -371,7 +371,6 @@ def _reset_client_state():
     yield
     process_identity._supervisor = None
     process_identity._supervised_pgids.clear()
-    process_identity._retired_supervisors.clear()
 
 
 @pytest.fixture
@@ -445,14 +444,13 @@ def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_gr
 
     process_identity.release_process_groups([222])
     assert spawned[0].closed, "supervisor kept resident with nothing left to reap"
-    assert not getattr(spawned[0], "waited", False), "a release must not block on the exiting supervisor"
+    wait_until(lambda: getattr(spawned[0], "waited", False), timeout=10,
+               what="the released supervisor to be reaped (a zombie until the next Popen otherwise)")
     assert spawned[0].lines()[-1] == "unregister 222", "release happened before the last unregister was sent"
     assert process_identity._supervisor is None
 
-    spawned[0]._exited = True
     process_identity.own_process_groups([333])
     assert len(spawned) == 2 and spawned[1].lines() == ["register 333"]
-    assert process_identity._retired_supervisors == [], "the exited supervisor was never reaped"
 
 
 def test_supervisor_survives_the_real_eof_release():
@@ -823,3 +821,20 @@ def test_the_supervisor_refuses_a_malformed_parent_pgid(parent):
     run = subprocess.run([process_identity._POSIX_SH, str(process_identity._SUPERVISOR_SCRIPT), parent],
                          input="", capture_output=True, text=True, timeout=10, check=False)
     assert run.returncode == 2 and "bad parent pgid" in run.stderr
+
+
+def test_a_released_supervisor_leaves_no_zombie_child():
+    """A foreground command registers and releases its group on every run; the exited supervisor
+    must not linger as a zombie child (psutil walkers of Hermes's children raise ZombieProcess)."""
+    import psutil
+
+    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    try:
+        process_identity.own_process_groups([child.pid])
+        sup = process_identity._supervisor
+        process_identity.release_process_groups([child.pid])
+        wait_until(lambda: not psutil.pid_exists(sup.pid), timeout=10,
+                   what="the released supervisor to be reaped, not left a zombie")
+    finally:
+        _kill(child.pid)
+        child.wait(timeout=10)
