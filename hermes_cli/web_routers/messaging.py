@@ -440,8 +440,9 @@ def _terminate_whatsapp_pairing(proc: subprocess.Popen | None) -> None:
                 proc.kill()
                 proc.wait(timeout=3)
     if proc.poll() is not None:
-        # Stopped; one we failed to stop stays covered by the owner-death supervisor.
-        release_process_group_once_empty(proc.pid, proc=proc)
+        # Stopped; one we failed to stop stays covered by the owner-death supervisor. timeout=0:
+        # callers run on the event loop.
+        release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
 
 
 def _fail_whatsapp_pairing(pairing_id: str, error: str, *, proc=None, unless=_WHATSAPP_ONBOARDING_TERMINAL_STATUSES) -> None:

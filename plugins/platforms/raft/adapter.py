@@ -404,7 +404,9 @@ class RaftAdapter(BasePlatformAdapter):
             logger.exception("[raft] Error stopping bridge")
         if proc.poll() is not None:
             # Stopped by us; a bridge we failed to stop stays covered by the owner-death supervisor.
-            release_process_group_once_empty(proc.pid, proc=proc)
+            # timeout=0: disconnect() runs this on the event loop, which must not sleep on a child
+            # the TERM to the leader alone left in its group.
+            release_process_group_once_empty(proc.pid, proc=proc, timeout=0)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:

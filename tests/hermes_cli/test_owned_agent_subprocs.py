@@ -12,6 +12,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import psutil
@@ -268,7 +269,11 @@ def test_a_stopped_bridge_whose_child_survived_stays_covered(monkeypatch, tmp_pa
     a._bridge_process = bridge
     try:
         wait_until(receipt.exists, what="helper receipt")
+        started = time.monotonic()
         a._stop_bridge()
+        # disconnect() runs this on the event loop: the live helper must not make it sleep out the
+        # release wait (it took a full second with the default timeout).
+        assert time.monotonic() - started < 0.8, "_stop_bridge() blocked on the surviving helper"
         assert bridge.poll() is not None, "_stop_bridge() left the bridge running"
         assert released == [], "a group with a live helper was released from the owner-death supervisor"
     finally:
