@@ -156,7 +156,8 @@ def test_a_daemon_another_live_hermes_started_on_the_same_name_is_never_register
                               stdin=subprocess.DEVNULL, start_new_session=True, env={**os.environ, **tag})
     try:
         _publish(runtime, "bu-default", daemon.pid)
-        browser_use_cli._own_harness_daemon({"BH_HOME": str(runtime.parent)})
+        # The in-call check stops too, instead of re-checking a daemon that is never ours every tick.
+        assert browser_use_cli._own_harness_daemon_until_owned({"BH_HOME": str(runtime.parent)}) is False
         assert registered == []
     finally:
         daemon.kill()
@@ -200,6 +201,7 @@ def test_a_managed_worker_never_owns_its_harness_daemon(fake_daemon, registered,
     _publish(runtime, "bu", proc.pid)
     monkeypatch.setattr(runtime_session_store, "_worker_process", True)
 
-    browser_use_cli._own_harness_daemon({"BH_RUNTIME_DIR": str(runtime), "BU_NAME": "work"})
+    env = {"BH_RUNTIME_DIR": str(runtime), "BU_NAME": "work"}
+    assert browser_use_cli._own_harness_daemon_until_owned(env) is False  # and the in-call check stops
 
     assert registered == []
