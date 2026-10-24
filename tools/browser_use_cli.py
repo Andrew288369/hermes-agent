@@ -661,6 +661,14 @@ def _published_daemon_pid(env: dict) -> Optional[int]:
         return None
 
 
+def _own_harness_daemon_until_owned(env: dict) -> Optional[bool]:
+    """Periodic check while browser_exec runs: own the daemon as soon as it publishes its pid, then
+    stop (False)."""
+    _own_harness_daemon(env)
+    with _owned_daemon_groups_lock:
+        return False if daemon_identity(env) in _owned_daemon_groups else None
+
+
 def _reload_daemons(daemons) -> None:  # each ``daemon_identity`` daemon, with its own dirs
     cmd = _find_cli() if daemons else None
     if not cmd:
@@ -691,7 +699,8 @@ def _own_harness_daemon(env: dict) -> None:
     ``{"pid", "started"}`` or a bare pid). The daemon is accepted only while it is this user's live
     ``browser_harness.daemon`` leading its own session and its spawn tag names this process, so a
     stale or planted pid file, or a daemon another Hermes started, never reaches the supervisor.
-    Runs after every browser_exec: a pid already owned for this daemon costs one file read."""
+    Runs after every browser_exec (and while a long one runs, until the daemon is owned): a pid
+    already owned for this daemon costs one file read."""
     if os.name != "posix":
         return  # Windows: the harness daemon is outside this process's job; nothing to register.
     import psutil
@@ -834,7 +843,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         # The first call starts the daemon and may run long (navigation, user code): own it as soon as
         # it publishes its pid, so a Hermes killed mid-call takes it along (the call's end owns it too).
         from agent.periodic_scheduler import schedule
-        owning = schedule(lambda: _own_harness_daemon(env), _OWN_DURING_CALL_S)
+        owning = schedule(lambda: _own_harness_daemon_until_owned(env), _OWN_DURING_CALL_S)
         try:
             return {"proc": _run_cli_killing_process_group(cmd, code, env, timeout)}
         except subprocess.TimeoutExpired:
