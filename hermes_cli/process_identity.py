@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -365,16 +365,45 @@ def _new_entry(
     )
 
 
+@contextmanager
+def _ledger_file_lock(lock_path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on ``lock_path`` for the ledger's read-modify-write. Best-effort like the
+    write itself: a lock file that cannot be opened or locked leaves the thread lock as the only guard."""
+    from hermes_cli.active_sessions import _flock
+
+    try:
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(lock_path.parent)
+        fh = open(lock_path, "a+", encoding="utf-8")
+    except OSError:
+        logger.debug("spawn ledger lock unavailable", exc_info=True)
+        yield
+        return
+    with fh:
+        try:
+            _flock(fh, lock=True)
+        except OSError:
+            logger.debug("spawn ledger lock failed", exc_info=True)
+            yield
+            return
+        try:
+            yield
+        finally:
+            with suppress(OSError):
+                _flock(fh, lock=False)
+
+
 def _append_entry(entry: LedgerEntry) -> bool:
     """Prune dead entries and append ``entry`` — the ONLY ledger write path.
 
-    Serialized under ``_LEDGER_LOCK`` with an atomic tmp+replace; no writer touches the file
-    outside this function.
+    Serialized under ``_LEDGER_LOCK`` and, across processes, an exclusive lock on a sidecar file
+    (every ``spawn_owned`` writes here, so concurrent Hermes processes otherwise dropped each
+    other's rows), with an atomic tmp+replace; no writer touches the file outside this function.
 
     See #91660.
     """
     path = _ledger_path()
-    with _LEDGER_LOCK:
+    with _LEDGER_LOCK, _ledger_file_lock(path.with_name(path.name + ".lock")):
         entries = _read_ledger_or_quarantine(path) or []
         # Drop malformed entries, our own stale entry, and provably dead pids.
         pruned = [

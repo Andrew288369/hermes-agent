@@ -405,3 +405,46 @@ def test_reclaim_ignores_unknown_pid_and_never_raises():
         assert pi.reap_orphaned_backend_owner(999, 9.0, kill_fn=lambda pid: None) is None
     with patch.object(pi, "ledger_entries", side_effect=RuntimeError("boom")):
         assert pi.reap_orphaned_backend_owner(555, 55.0, kill_fn=lambda pid: None) is None
+
+
+_CONCURRENT_WRITER = r"""
+import os, subprocess, sys, time
+sys.path.insert(0, sys.argv[1])
+from hermes_cli.process_identity import register_child
+start_at, n = float(sys.argv[2]), int(sys.argv[3])
+kids = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
+        for _ in range(n)]
+while time.time() < start_at:
+    time.sleep(0.001)
+for kid in kids:
+    register_child(kid.pid, "ledger-race")
+print(" ".join(str(k.pid) for k in kids), flush=True)
+sys.stdin.read()  # keep the children alive until the test has read the ledger
+for kid in kids:
+    kid.kill()
+"""
+
+
+def test_concurrent_processes_never_drop_each_others_ledger_rows(tmp_path):
+    """Every spawn_owned writes the machine-wide ledger; three processes registering at once lost
+    about two thirds of their rows to each other's read-modify-write before the cross-process lock."""
+    import json
+    import time
+    from pathlib import Path
+
+    repo = str(Path(__file__).resolve().parents[2])
+    env = {**os.environ, "HERMES_HOME": str(tmp_path / "home")}
+    start_at = time.time() + 2.0
+    writers = [subprocess.Popen([sys.executable, "-c", _CONCURRENT_WRITER, repo, str(start_at), "15"],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
+               for _ in range(3)]
+    try:
+        pids = {int(p) for w in writers for p in w.stdout.readline().split()}
+        assert len(pids) == 45
+        rows = json.loads((tmp_path / "home" / "spawn-ledger.json").read_text(encoding="utf-8"))
+        kept = {r["pid"] for r in rows if r.get("purpose") == "ledger-race"}
+        assert kept == pids, f"{len(pids - kept)} of 45 rows lost to a concurrent writer"
+    finally:
+        for w in writers:
+            w.stdin.close()
+            w.wait(timeout=30)
