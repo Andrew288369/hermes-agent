@@ -203,6 +203,30 @@ def test_escalates_to_sigkill_for_a_group_that_ignores_sigterm():
         supervisor.wait(timeout=10)
 
 
+def test_the_term_grace_holds_even_with_a_broken_path():
+    """``sleep`` is not a dash builtin: with PATH unusable the grace loop skipped its sleeps and the
+    KILL landed at once, cutting short a child's TERM cleanup."""
+    victim = subprocess.Popen(
+        [sys.executable, "-c",
+         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('armed', flush=True); time.sleep(300)"],
+        stdout=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    supervisor = subprocess.Popen(_supervisor_argv(os.getpgid(0)), stdin=subprocess.PIPE, text=True,
+                                  start_new_session=True, env={"PATH": "/nonexistent"})
+    try:
+        assert victim.stdout.readline().strip() == "armed"
+        supervisor.stdin.write(f"register {victim.pid}\n")
+        supervisor.stdin.close()
+        closed = time.monotonic()
+        assert _wait_exited(victim), "a SIGTERM-ignoring group survived the reap"
+        assert time.monotonic() - closed >= 1.5, "the KILL skipped the TERM grace"
+    finally:
+        _kill(victim.pid)
+        _kill(supervisor.pid)
+        victim.wait(timeout=10)
+        supervisor.wait(timeout=10)
+
+
 def test_leaves_an_unregistered_group_alone_at_eof():
     # The other failure direction, and the more damaging one: a clean Hermes
     # shutdown unregisters as it tears each child down, so EOF must not become

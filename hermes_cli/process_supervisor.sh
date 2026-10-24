@@ -49,7 +49,8 @@ for _ in 1 2 3; do
   for g in $reg; do kill -0 -"$g" 2>/dev/null && live="$live $g"; done
   reg=$live
   [ -n "$reg" ] || exit 0
-  sleep 1
+  # The default PATH: a broken PATH must not turn the TERM grace into an instant KILL.
+  command -p sleep 1 2>/dev/null || sleep 1
 done
 for g in $reg; do kill -KILL -"$g" 2>/dev/null; done
 exit 0
