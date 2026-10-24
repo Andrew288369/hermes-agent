@@ -627,29 +627,6 @@ def stop_harness_daemons(home_key: Optional[str] = None) -> None:
     _reload_daemons(daemons)
 
 
-def stop_owned_harness_daemons() -> None:
-    """Stop only the harness daemons this process owns (``_owned_daemon_groups``: started by its own
-    commands). The exit handler uses this: a daemon another live Hermes started on the same name was
-    driven here too, but it is that Hermes's to stop. Windows records no ownership (``_own_harness_daemon``
-    is POSIX-only) and its exit never stopped a browser_exec-only process's daemons, so nothing to do."""
-    if os.name != "posix":
-        return
-    with _owned_daemon_groups_lock:
-        owned = dict(_owned_daemon_groups)
-    with _driven_daemons_lock:
-        for key in owned:
-            _driven_daemons.pop(key, None)
-    # --reload stops a daemon by name, and one of ours that exited may since have been replaced under
-    # that name by another live Hermes: only a name whose published pid is still ours is reloaded.
-    env = _base_subprocess_env() if owned else {}
-    current = [key for key, pid in owned.items() if _published_daemon_pid(daemon_env(env, key)) == pid]
-    for key in owned.keys() - set(current):
-        with _owned_daemon_groups_lock:
-            _owned_daemon_groups.pop(key, None)
-        release_process_group_once_empty(owned[key], timeout=0)  # a survivor of ours stays covered
-    _reload_daemons(sorted(current))
-
-
 def _published_daemon_pid(env: dict) -> Optional[int]:
     """The pid the harness published for the daemon ``env`` drives (``harness_pid_file``: JSON
     ``{"pid", "started"}`` or a bare pid), or None when there is none."""

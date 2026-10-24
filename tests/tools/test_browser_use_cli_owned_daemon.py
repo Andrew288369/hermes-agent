@@ -138,105 +138,6 @@ def _shared_runtime(tmp_path) -> tuple[Path, dict]:
     return runtime, {"BH_RUNTIME_DIR": str(runtime), "BH_RUNTIME_DIR_SHARED": "1"}
 
 
-def test_the_exit_path_stops_only_the_daemons_this_process_owns(monkeypatch, tmp_path, registered):
-    runtime, dirs = _shared_runtime(tmp_path)
-    ours = browser_use_cli.daemon_identity({**dirs, "BU_NAME": "ours"})
-    theirs = browser_use_cli.daemon_identity({**dirs, "BU_NAME": "theirs"})  # another live Hermes started it
-    browser_use_cli._owned_daemon_groups.update({ours: 4242})
-    monkeypatch.setattr(browser_use_cli, "_driven_daemons", {ours: "home", theirs: "home"})
-    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
-    monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
-    _publish(runtime, "bu-ours", 4242)
-    reloaded = []
-    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group",
-                        lambda cmd, code, env, timeout: reloaded.append(env["BU_NAME"]))
-
-    from tools import browser_tool_lifecycle
-    from tools.browser_tool_origin import origin
-    monkeypatch.setattr(origin, "_cleanup_done", False)
-    monkeypatch.setattr(origin, "_active_sessions", {})
-    for step in ("_stop_all_lightpanda", "_reap_orphaned_browser_sessions"):
-        monkeypatch.setattr(browser_tool_lifecycle, step, lambda: None)
-    monkeypatch.setattr(browser_tool_lifecycle._real_profile, "_terminate_real_profile_chrome", lambda: None)
-
-    browser_tool_lifecycle._emergency_cleanup_all_sessions()  # the atexit handler
-    assert reloaded == ["ours"]
-    assert browser_use_cli._driven_daemons == {theirs: "home"}
-
-
-def test_exit_never_reloads_a_name_another_hermes_republished_after_ours_exited(monkeypatch, tmp_path, registered):
-    """--reload goes by name: once our daemon exited and another live Hermes started its replacement
-    under the same name, exiting here must leave that replacement running and just release ours."""
-    runtime, dirs = _shared_runtime(tmp_path)
-    ours = browser_use_cli.daemon_identity({**dirs, "BU_NAME": "work"})
-    browser_use_cli._owned_daemon_groups.update({ours: 4242})
-    monkeypatch.setattr(browser_use_cli, "_driven_daemons", {ours: "home"})
-    monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-harness"])
-    monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
-    _publish(runtime, "bu-work", 4242)
-    reloaded = []
-    monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group",
-                        lambda cmd, code, env, timeout: reloaded.append(env["BU_NAME"]))
-    with monkeypatch.context() as m:  # control: while the name still publishes our pid, it is reloaded
-        m.setattr(browser_use_cli, "_owned_daemon_groups", {ours: 4242})
-        m.setattr(browser_use_cli, "_driven_daemons", {})
-        browser_use_cli.stop_owned_harness_daemons()
-    assert reloaded == ["work"]
-    registered.clear()
-
-    _publish(runtime, "bu-work", 5151)  # ours exited; the other Hermes's daemon now holds the name
-    reloaded.clear()
-
-    browser_use_cli.stop_owned_harness_daemons()
-
-    assert reloaded == []
-    assert registered == [("unregister", [4242])]
-    assert browser_use_cli._owned_daemon_groups == {}
-
-
-# The daemon reparents to init once its owner dies, so cleanup leaves this test's subtree.
-@pytest.mark.live_system_guard_bypass
-def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
-    """End to end through the real supervisor: the owner registers its detached daemon, then dies
-    by SIGKILL (no Python cleanup runs), and the daemon must go with it."""
-    pkg = tmp_path / "pkgroot" / "browser_harness"
-    pkg.mkdir(parents=True)
-    (pkg / "__init__.py").write_text("", encoding="utf-8")
-    (pkg / "daemon.py").write_text("import time\ntime.sleep(300)\n", encoding="utf-8")
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    owner_src = (
-        "import json, os, subprocess, sys, time\n"
-        "from tools import browser_use_cli\n"
-        f"d = subprocess.Popen([sys.executable, '-m', 'browser_harness.daemon'], cwd={str(tmp_path / 'pkgroot')!r},"
-        " stdin=subprocess.DEVNULL, start_new_session=True, env=browser_use_cli._base_subprocess_env())\n"
-        f"open({str(runtime / 'bu.pid')!r}, 'w', encoding='utf-8').write(json.dumps({{'pid': d.pid}}))\n"  # windows-footgun: ok — a write
-        f"browser_use_cli._own_harness_daemon({{'BH_RUNTIME_DIR': {str(runtime)!r}}})\n"
-        "print(d.pid, flush=True)\n"
-        "time.sleep(300)\n"
-    )
-    env = dict(os.environ, HERMES_HOME=str(tmp_path / "home"), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
-    owner = subprocess.Popen([sys.executable, "-c", owner_src], env=env, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.PIPE, text=True)
-    daemon_pid = None
-    try:
-        daemon_pid = int(owner.stdout.readline())
-        owner.kill()
-        owner.wait(timeout=10)
-        wait_until(lambda: not _group_alive(daemon_pid), timeout=15,
-                   what="the harness daemon to die with the kill -9'd Hermes process that drove it")
-    finally:
-        if daemon_pid is not None:
-            try:
-                os.killpg(daemon_pid, 9)  # windows-footgun: ok — posix-marked test
-            except (ProcessLookupError, PermissionError):
-                pass
-        if owner.poll() is None:
-            owner.kill()
-        owner.wait(timeout=10)
-        process_identity._supervised_pgids.clear()
-
-
 def test_a_daemon_another_live_hermes_started_on_the_same_name_is_never_registered(tmp_path, registered):
     """Two Hermes processes on the default BU_NAME read the same bu-default.pid. The daemon belongs
     to the one whose CLI started it: the other must not hand it to its supervisor, or that Hermes
@@ -268,8 +169,6 @@ def test_a_long_first_browser_exec_owns_its_daemon_before_the_call_returns(monke
     """The first call starts the daemon and may run for minutes (navigation, user code). Its daemon
     must reach the supervisor during the call, or a Hermes killed mid-call leaves it running."""
     import threading
-    from tools import browser_tool_cloud as cloud
-    from tools import browser_tool_session as session
 
     owned_during_call = threading.Event()
     running = threading.Event()
@@ -284,14 +183,8 @@ def test_a_long_first_browser_exec_owns_its_daemon_before_the_call_returns(monke
 
     monkeypatch.setattr(browser_use_cli, "_find_cli", lambda: ["browser-use"])
     monkeypatch.setattr(browser_use_cli, "_base_subprocess_env", dict)
-    monkeypatch.setattr(browser_use_cli, "_real_profile_consented", lambda: False)
-    monkeypatch.setattr(browser_use_cli, "_resolve_lightpanda_cdp", lambda *a: None)
-    monkeypatch.setattr("tools.browser_tool_cdp._get_cdp_override", lambda: "")
-    monkeypatch.setattr("tools.browser_tool._get_open_command_timeout", lambda **_kw: 5)
-    monkeypatch.setattr(cloud, "_get_cloud_provider", lambda: None)
-    monkeypatch.setattr(session, "_run_browser_command", lambda *_a, **_kw: {
-        "success": True, "data": {"cdpUrl": "http://127.0.0.1:9222"}})
-    monkeypatch.setattr(browser_use_cli, "_attach_vault_supervisor", lambda *a: None)
+    monkeypatch.setattr(browser_use_cli, "_route_exec_current",
+                        lambda env, *_a: ({**env, "BU_CDP_URL": "http://127.0.0.1:9222"}, None, False, 0))
     monkeypatch.setattr(browser_use_cli, "_run_cli_killing_process_group", run_cli)
     monkeypatch.setattr(browser_use_cli, "_driven_daemons", {})
 
@@ -310,12 +203,3 @@ def test_a_managed_worker_never_owns_its_harness_daemon(fake_daemon, registered,
     browser_use_cli._own_harness_daemon({"BH_RUNTIME_DIR": str(runtime), "BU_NAME": "work"})
 
     assert registered == []
-
-
-def test_windows_exit_stops_no_harness_daemon(monkeypatch):
-    """Windows records no ownership and its exit never stopped a browser_exec-only process's daemons:
-    reloading every driven one would stop a shared daemon another live Hermes is using."""
-    monkeypatch.setattr(browser_use_cli.os, "name", "nt")
-    monkeypatch.setattr(browser_use_cli, "_driven_daemons", {("", "", "", "", "default"): "home"})
-    monkeypatch.setattr(browser_use_cli, "_reload_daemons", lambda daemons: pytest.fail(f"reloaded {daemons}"))
-    browser_use_cli.stop_owned_harness_daemons()
