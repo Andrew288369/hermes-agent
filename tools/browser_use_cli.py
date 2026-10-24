@@ -703,6 +703,9 @@ def _own_harness_daemon(env: dict) -> None:
     already owned for this daemon costs one file read."""
     if os.name != "posix":
         return  # Windows: the harness daemon is outside this process's job; nothing to register.
+    from agent.runtime_session_store import is_worker_process
+    if is_worker_process():
+        return  # a managed per-turn worker: the next turn's worker keeps driving this daemon
     import psutil
 
     daemon = daemon_identity(env)
