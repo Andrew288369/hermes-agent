@@ -753,7 +753,7 @@ def _spawn_supervisor():
         # start_new_session=True is load-bearing: shutdown paths killpg this process's own group,
         # which would kill the supervisor before it could reap anything. close_fds keeps the write
         # end of every OTHER pipe we hold out of it, so it never delays another child's EOF.
-        return subprocess.Popen(
+        proc = subprocess.Popen(
             [_POSIX_SH, str(_SUPERVISOR_SCRIPT), str(os.getpgid(0))],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             start_new_session=True, close_fds=True, text=True, encoding="utf-8")
@@ -762,6 +762,59 @@ def _spawn_supervisor():
         # normally; only the ungraceful-exit safety net is lost.
         logger.debug("Could not start the owner-death supervisor", exc_info=True)
         return None
+    _watch_supervisor(proc)
+    return proc
+
+
+# A supervisor that dies sooner than this after starting cannot stay up (a broken install): the waiter
+# leaves it to the next registration change instead of restarting it in a loop.
+_SUPERVISOR_RESTART_MIN_UPTIME_S = 5.0
+
+
+def _watch_supervisor(proc) -> None:
+    """One waiter thread per supervisor, blocked in the untimed ``wait()`` (waitpid, no polling). It
+    reaps the supervisor the moment it exits, so no zombie child is left for psutil walkers of this
+    process's children to trip on. A supervisor that died on its own while groups are still registered
+    (``pkill -f hermes``, the OOM killer) is restarted and replayed at once, so coverage does not wait
+    for the next registration change; a released one (EOF with an empty set) is only reaped."""
+    started = time.monotonic()
+
+    def wait_then_restart() -> None:
+        global _supervisor
+        proc.wait()
+        with _supervisor_lock:
+            if _supervisor is not proc:
+                return  # released, or already replaced after a broken pipe: only reaped
+            _supervisor = None
+            _prune_dead_supervised_pgids()
+            if not _supervised_pgids:
+                return
+            restart = time.monotonic() - started >= _SUPERVISOR_RESTART_MIN_UPTIME_S
+            logger.warning(
+                "owner-death supervisor exited (status %s) with %d process group(s) registered; %s",
+                proc.returncode, len(_supervised_pgids),
+                "restarting it" if restart else "it could not stay up, retrying at the next registration")
+            if restart:
+                _start_supervisor_locked()
+
+    # health: allow HX012 -- the thread waitpid()s one child and touches only process-global supervisor state
+    threading.Thread(target=wait_then_restart, name="owner-death-supervisor-waiter", daemon=True).start()
+
+
+def _start_supervisor_locked():
+    """Start a supervisor and replay every live registration to it; the caller holds
+    ``_supervisor_lock``. Returns it, or None when it cannot start or its pipe broke at once."""
+    global _supervisor
+    proc = _supervisor = _spawn_supervisor()
+    if proc is None:
+        return None
+    try:
+        proc.stdin.write("".join(f"register {pgid}\n" for pgid in _supervised_pgids))
+        proc.stdin.flush()
+    except (BrokenPipeError, ValueError, OSError):
+        _supervisor = None  # its waiter reaps it; the next registration change retries
+        return None
+    return proc
 
 
 def is_owner_death_supervisor(argv: Sequence[str]) -> bool:
@@ -868,14 +921,6 @@ def spawn_owned(argv, *, purpose: str, **popen_kwargs) -> subprocess.Popen:
     return proc
 
 
-def _reap_in_background(proc) -> None:
-    """Reap an exiting supervisor off the caller's thread. A timed ``Popen.wait`` polls with sleeps
-    (~27 ms per release on macOS), and leaving it unreaped keeps a zombie child that psutil walkers of this
-    process's children trip on; an untimed ``wait()`` blocks in waitpid and returns the moment it exits."""
-    # health: allow HX012 -- the thread only waitpid()s a child that is exiting; no profile-scoped state
-    threading.Thread(target=proc.wait, name="owner-death-supervisor-reaper", daemon=True).start()
-
-
 def _update_supervised_pgids(verb: str, pgids) -> None:
     """Send ``register``/``unregister`` for ``pgids`` to this process's supervisor. Failures are
     swallowed: losing the safety net must never fail a live child."""
@@ -904,25 +949,21 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
                 # SET, not the verb: after a broken-pipe write dropped the supervisor with groups
                 # still registered, an unregister must still rebuild coverage for the survivors.
                 return
-            proc = _spawn_supervisor()
-            _supervisor = proc
-            if proc is None:
-                return
-            # A fresh supervisor knows nothing: replay live coverage (already reflects this
-            # call's mutation and the prune, so pruned groups never reach the replacement).
-            payload = "".join(f"register {pgid}\n" for pgid in _supervised_pgids)
-        else:
-            payload = "".join(f"{verb} {pgid}\n" for pgid in wanted)
-            payload += "".join(f"unregister {pgid}\n" for pgid in stale)
+            # A fresh supervisor knows nothing: replay live coverage (already reflects this call's
+            # mutation and the prune, so pruned groups never reach the replacement).
+            _start_supervisor_locked()
+            return
+        payload = "".join(f"{verb} {pgid}\n" for pgid in wanted)
+        payload += "".join(f"unregister {pgid}\n" for pgid in stale)
 
         try:
             proc.stdin.write(payload)
             proc.stdin.flush()
         except (BrokenPipeError, ValueError, OSError):
             # It exited between poll() and write(). Drop it so the next call respawns and replays
-            # from ``_supervised_pgids`` (the set, not the pipe, is the record of what to reap).
+            # from ``_supervised_pgids`` (the set, not the pipe, is the record of what to reap). Its
+            # waiter thread reaps it.
             _supervisor = None
-            _reap_in_background(proc)
             return
 
         if not _supervised_pgids:
@@ -933,5 +974,4 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
                 proc.stdin.close()
             except (BrokenPipeError, ValueError, OSError):
                 pass
-            _supervisor = None
-            _reap_in_background(proc)
+            _supervisor = None  # its waiter thread reaps it once it exits

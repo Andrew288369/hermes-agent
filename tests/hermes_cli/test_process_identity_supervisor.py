@@ -446,9 +446,7 @@ def test_supervisor_is_released_once_nothing_is_left_to_reap(monkeypatch, all_gr
 
     process_identity.release_process_groups([222])
     assert spawned[0].closed, "supervisor kept resident with nothing left to reap"
-    wait_until(lambda: getattr(spawned[0], "waited", False), timeout=10,
-               what="the released supervisor to be reaped (a zombie until the next Popen otherwise)")
-    assert spawned[0].waited_on is not threading.current_thread(), "the release blocked on the supervisor's exit"
+    assert not getattr(spawned[0], "waited", False), "the release blocked on the supervisor's exit"
     assert spawned[0].lines()[-1] == "unregister 222", "release happened before the last unregister was sent"
     assert process_identity._supervisor is None
 
@@ -540,9 +538,8 @@ def test_a_broken_pipe_never_propagates_into_a_live_child(monkeypatch, all_group
     process_identity.own_process_groups([111])  # must not raise
 
     # Dropped, so the next registration respawns instead of writing into a
-    # pipe that is known to be dead; and reaped, so it is not left a zombie.
+    # pipe that is known to be dead (a real one is reaped by its own waiter thread).
     assert process_identity._supervisor is None
-    wait_until(lambda: getattr(spawned[0], "waited", False), timeout=10, what="the dead supervisor to be reaped")
 
 
 def test_unregister_after_a_broken_pipe_rebuilds_coverage_for_survivors(monkeypatch, all_groups_alive):
@@ -840,6 +837,32 @@ def test_a_released_supervisor_leaves_no_zombie_child():
         process_identity.release_process_groups([child.pid])
         wait_until(lambda: not psutil.pid_exists(sup.pid), timeout=10,
                    what="the released supervisor to be reaped, not left a zombie")
+    finally:
+        _kill(child.pid)
+        child.wait(timeout=10)
+
+
+def test_a_supervisor_killed_on_its_own_is_restarted_with_every_group_replayed(monkeypatch):
+    """``pkill -f hermes`` (or the OOM killer) can take the supervisor out while this process lives.
+    Its waiter restarts it at once and replays the registered groups, so they still die with us even
+    if no registration change ever comes; it is also reaped, never left a zombie."""
+    import psutil
+
+    monkeypatch.setattr(process_identity, "_SUPERVISOR_RESTART_MIN_UPTIME_S", 0.0)
+    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    try:
+        process_identity.own_process_groups([child.pid])
+        first = process_identity._supervisor
+        first.kill()
+        wait_until(lambda: process_identity._supervisor not in (None, first), timeout=10,
+                   what="a replacement supervisor started without any registration change")
+        second = process_identity._supervisor
+        wait_until(lambda: not psutil.pid_exists(first.pid), timeout=10, what="the killed supervisor reaped")
+        assert child.poll() is None, "restarting the supervisor touched a live group"
+
+        second.stdin.close()  # the EOF our death sends: the replayed group must be reaped
+        wait_until(lambda: child.poll() is not None, timeout=15,
+                   what="the group registered before the restart killed by the replacement")
     finally:
         _kill(child.pid)
         child.wait(timeout=10)
