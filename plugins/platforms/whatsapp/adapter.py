@@ -650,8 +650,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
-            # A secondary adopts or reaps only a bridge its own pidfile identifies (crash restart);
-            # the default keeps its historical adopt-or-clear-the-port path.
+            # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
+            # its historical adopt-or-clear-the-port path. A bridge this version started dies with
+            # its gateway (spawn_owned), so what is adopted here is one a pre-update gateway or
+            # another process left running; credentials are on disk, so a fresh bridge needs no re-pair.
             if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
             if self._foreign_bridge_session:
