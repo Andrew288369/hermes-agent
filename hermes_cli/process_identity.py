@@ -709,7 +709,7 @@ def attach_self_to_kill_on_close_job() -> bool:
 #
 # ``spawn_owned`` is THE way to start a long-lived child that must die with this process: the child
 # leads its own process group, that group is handed to the supervisor, and the child is recorded in
-# the spawn ledger. Children something else spawns (the MCP SDK, a daemon's own Chromium) hand their
+# the spawn ledger. Children something else spawns (the MCP SDK, the browser-harness daemon) hand their
 # group to ``own_process_groups`` where we learn the pgid; a descendant that leaves the group on
 # purpose is registered by its own pgid the same way. Stopping an owned child yourself ends with
 # ``release_process_groups``. ``scripts/check_detached_spawns.py`` flags new detached spawns

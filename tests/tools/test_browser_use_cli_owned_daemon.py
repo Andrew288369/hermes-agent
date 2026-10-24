@@ -138,6 +138,48 @@ def _shared_runtime(tmp_path) -> tuple[Path, dict]:
     return runtime, {"BH_RUNTIME_DIR": str(runtime), "BH_RUNTIME_DIR_SHARED": "1"}
 
 
+@pytest.mark.live_system_guard_bypass
+def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
+    """End to end through the real supervisor: the owner registers its detached daemon, then dies
+    by SIGKILL (no Python cleanup runs), and the daemon must go with it."""
+    pkg = tmp_path / "pkgroot" / "browser_harness"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "daemon.py").write_text("import time\ntime.sleep(300)\n", encoding="utf-8")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    owner_src = (
+        "import json, os, subprocess, sys, time\n"
+        "from tools import browser_use_cli\n"
+        f"d = subprocess.Popen([sys.executable, '-m', 'browser_harness.daemon'], cwd={str(tmp_path / 'pkgroot')!r},"
+        " stdin=subprocess.DEVNULL, start_new_session=True, env=browser_use_cli._base_subprocess_env())\n"
+        f"open({str(runtime / 'bu.pid')!r}, 'w', encoding='utf-8').write(json.dumps({{'pid': d.pid}}))\n"  # windows-footgun: ok — a write
+        f"browser_use_cli._own_harness_daemon({{'BH_RUNTIME_DIR': {str(runtime)!r}}})\n"
+        "print(d.pid, flush=True)\n"
+        "time.sleep(300)\n"
+    )
+    env = dict(os.environ, HERMES_HOME=str(tmp_path / "home"), PYTHONPATH=str(Path(__file__).resolve().parents[2]))
+    owner = subprocess.Popen([sys.executable, "-c", owner_src], env=env, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.PIPE, text=True)
+    daemon_pid = None
+    try:
+        daemon_pid = int(owner.stdout.readline())
+        owner.kill()
+        owner.wait(timeout=10)
+        wait_until(lambda: not _group_alive(daemon_pid), timeout=15,
+                   what="the harness daemon to die with the kill -9'd Hermes process that drove it")
+    finally:
+        if daemon_pid is not None:
+            try:
+                os.killpg(daemon_pid, 9)  # windows-footgun: ok — posix-marked test
+            except (ProcessLookupError, PermissionError):
+                pass
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(timeout=10)
+        process_identity._supervised_pgids.clear()
+
+
 def test_a_daemon_another_live_hermes_started_on_the_same_name_is_never_registered(tmp_path, registered):
     """Two Hermes processes on the default BU_NAME read the same bu-default.pid. The daemon belongs
     to the one whose CLI started it: the other must not hand it to its supervisor, or that Hermes
