@@ -393,7 +393,9 @@ class _FakeSupervisor:
 
 
 @pytest.fixture(autouse=True)
-def _reset_client_state():
+def _reset_client_state(monkeypatch):
+    # The protocol tests below assert the release itself; the idle grace has its own test.
+    monkeypatch.setattr(process_identity, "_SUPERVISOR_IDLE_EXIT_S", 0.0)
     yield
     process_identity._supervisor = None
     process_identity._supervised_pgids.clear()
@@ -911,3 +913,20 @@ def test_a_supervisor_dropped_on_a_broken_pipe_is_still_restarted_by_its_waiter(
     finally:
         _kill(child.pid)
         child.wait(timeout=10)
+
+
+def test_an_idle_supervisor_stays_for_the_next_command_and_exits_after_the_grace(monkeypatch):
+    """A foreground command owns and releases its group every time; a supervisor per command cost a
+    /bin/sh spawn (~11 ms). The supervisor now outlives an empty set for a grace, then still exits."""
+    monkeypatch.setattr(process_identity, "_SUPERVISOR_IDLE_EXIT_S", 1.0)
+    for _ in range(2):
+        child = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        process_identity.own_process_groups([child.pid])
+        child.wait(timeout=10)
+        process_identity.release_process_group_once_empty(child.pid, proc=child, timeout=5)
+        if _ == 0:
+            first = process_identity._supervisor
+            assert first is not None and first.poll() is None, "the supervisor exited with the first command"
+    assert process_identity._supervisor is first, "the second command spawned another supervisor"
+    wait_until(lambda: process_identity._supervisor is None, timeout=10, what="the idle supervisor released")
+    wait_until(lambda: first.returncode is not None, timeout=10, what="the idle supervisor to exit and be reaped")

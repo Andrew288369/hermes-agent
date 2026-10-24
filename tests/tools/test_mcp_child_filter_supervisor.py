@@ -17,6 +17,7 @@ pytestmark = pytest.mark.platforms("posix")
 
 
 def test_an_owned_spawn_racing_mcp_discovery_does_not_hand_mcp_the_supervisor(monkeypatch):
+    monkeypatch.setattr(process_identity, "_SUPERVISOR_IDLE_EXIT_S", 0.0)
     monkeypatch.setattr(process_identity, "_supervisor", None)
     monkeypatch.setattr(process_identity, "_supervised_pgids", set())
     monkeypatch.setattr(process_identity, "register_child", lambda *a, **k: True)

@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -782,6 +782,47 @@ def _watch_supervisor(proc) -> None:
     threading.Thread(target=wait_then_restart, name="owner-death-supervisor-waiter", daemon=True).start()
 
 
+# An idle supervisor (nothing registered) exits this long after the set last emptied, unless a new
+# registration arrives first.
+_SUPERVISOR_IDLE_EXIT_S = 30.0
+_idle_release: Optional[threading.Timer] = None
+
+
+def _release_when_idle_locked(proc) -> None:
+    """Close ``proc``'s pipe once the set has stayed empty for ``_SUPERVISOR_IDLE_EXIT_S``; the caller
+    holds ``_supervisor_lock``. Closing our write end is the same EOF our death sends; with an empty
+    set it exits, and its waiter thread reaps it. The next registration respawns and replays."""
+    global _idle_release
+    _cancel_idle_release_locked()
+    if _SUPERVISOR_IDLE_EXIT_S <= 0:
+        _close_idle_supervisor_locked(proc)
+        return
+
+    def release() -> None:
+        with _supervisor_lock:
+            _close_idle_supervisor_locked(proc)
+
+    _idle_release = threading.Timer(_SUPERVISOR_IDLE_EXIT_S, release)
+    _idle_release.daemon = True
+    _idle_release.start()
+
+
+def _close_idle_supervisor_locked(proc) -> None:
+    global _supervisor
+    if _supervisor is not proc or _supervised_pgids:
+        return  # replaced, or something registered meanwhile
+    with suppress(BrokenPipeError, ValueError, OSError):
+        proc.stdin.close()
+    _supervisor = None
+
+
+def _cancel_idle_release_locked() -> None:
+    global _idle_release
+    if _idle_release is not None:
+        _idle_release.cancel()
+        _idle_release = None
+
+
 def _start_supervisor_locked():
     """Start a supervisor and replay every live registration to it; the caller holds
     ``_supervisor_lock``. Returns it, or None when it cannot start or its pipe broke at once."""
@@ -934,6 +975,8 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
             # mutation and the prune, so pruned groups never reach the replacement).
             _start_supervisor_locked()
             return
+        if _supervised_pgids:
+            _cancel_idle_release_locked()
         payload = "".join(f"{verb} {pgid}\n" for pgid in wanted)
         payload += "".join(f"unregister {pgid}\n" for pgid in stale)
 
@@ -948,11 +991,8 @@ def _update_supervised_pgids(verb: str, pgids) -> None:
             return
 
         if not _supervised_pgids:
-            # Nothing left to reap: release the supervisor rather than keep a process and a pipe
-            # resident for the life of a gateway. Closing our write end is the same EOF our death
-            # sends; with an empty set it exits. The next register respawns and replays.
-            try:
-                proc.stdin.close()
-            except (BrokenPipeError, ValueError, OSError):
-                pass
-            _supervisor = None  # its waiter thread reaps it once it exits
+            # Nothing left to reap: release the supervisor after an idle grace rather than keep a
+            # process and a pipe resident for the life of a gateway. Not at once: a foreground
+            # command owns and releases its group every time, and a supervisor per command costs a
+            # /bin/sh spawn (~11 ms) under this lock.
+            _release_when_idle_locked(proc)
