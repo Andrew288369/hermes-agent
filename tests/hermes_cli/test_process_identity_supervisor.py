@@ -890,3 +890,24 @@ def test_a_supervisor_killed_on_its_own_is_restarted_with_every_group_replayed(m
     finally:
         _kill(child.pid)
         child.wait(timeout=10)
+
+
+def test_a_supervisor_dropped_on_a_broken_pipe_is_still_restarted_by_its_waiter(monkeypatch):
+    """A caller can hit the dead supervisor's pipe before its waiter wakes (the waiter holds the
+    Popen's waitpid lock, so poll() still says "running"); that caller drops it. The waiter must still
+    restart coverage, or the registered groups wait for the next registration change."""
+    monkeypatch.setattr(process_identity, "_SUPERVISOR_RESTART_MIN_UPTIME_S", 0.0)
+    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    try:
+        process_identity.own_process_groups([child.pid])
+        first = process_identity._supervisor
+        with process_identity._supervisor_lock:  # the broken-pipe caller, before the waiter runs
+            first.kill()
+            process_identity._supervisor = None
+        wait_until(lambda: process_identity._supervisor not in (None, first), timeout=10,
+                   what="a replacement started for the supervisor a broken pipe dropped")
+        process_identity._supervisor.stdin.close()
+        wait_until(lambda: child.poll() is not None, timeout=15, what="the replayed group killed")
+    finally:
+        _kill(child.pid)
+        child.wait(timeout=10)

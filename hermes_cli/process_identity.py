@@ -762,8 +762,10 @@ def _watch_supervisor(proc) -> None:
         global _supervisor
         proc.wait()
         with _supervisor_lock:
-            if _supervisor is not proc:
-                return  # released, or already replaced after a broken pipe: only reaped
+            if _supervisor is not None and _supervisor is not proc:
+                return  # already replaced: only reaped
+            # Still current, or dropped by a caller whose write hit its broken pipe: restart below if
+            # groups are still registered (a deliberate release leaves the set empty).
             _supervisor = None
             _prune_dead_supervised_pgids()
             if not _supervised_pgids:
