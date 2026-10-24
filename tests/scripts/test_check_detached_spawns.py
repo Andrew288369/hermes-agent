@@ -96,3 +96,23 @@ def test_the_repository_has_no_unmarked_detached_spawn():
     mod = _load()
     assert mod.scan() == {}, "a detached spawn outside spawn_owned lacks a `detached-spawn: ok — <why>` marker"
     assert mod._BASELINE == {}
+
+
+def test_a_marker_without_a_reason_does_not_opt_out(tmp_path):
+    mod = _load()
+    f = tmp_path / "tools" / "x.py"
+    f.parent.mkdir()
+    f.write_text(textwrap.dedent("""\
+        subprocess.Popen(a, start_new_session=True)  # detached-spawn: ok
+        subprocess.Popen(b, start_new_session=True)  # detached-spawn: ok —
+        subprocess.Popen(c, start_new_session=True)  # detached-spawn: ok - restart watcher, outlives us
+    """), encoding="utf-8")
+    assert [n for n, _ in mod.scan([f], root=tmp_path)["tools/x.py"]] == [1, 2]
+
+
+def test_a_tree_git_cannot_list_fails_closed(tmp_path, monkeypatch, capsys):
+    """No git (or not a checkout) used to scan zero files and report the tree clean."""
+    mod = _load()
+    monkeypatch.setattr(mod, "ROOT", tmp_path)  # not a git checkout
+    assert mod.main([]) == 2
+    assert "cannot list the tracked files" in capsys.readouterr().err

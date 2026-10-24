@@ -733,8 +733,8 @@ def attach_self_to_kill_on_close_job() -> bool:
 # the spawn ledger. Children something else spawns (the MCP SDK, a daemon's own Chromium) hand their
 # group to ``own_process_groups`` where we learn the pgid; a descendant that leaves the group on
 # purpose is registered by its own pgid the same way. Stopping an owned child yourself ends with
-# ``release_process_groups``. ``scripts/check_detached_spawns.py`` keeps new detached spawns
-# (start_new_session / setsid / setpgid) from bypassing this. POSIX-only: Windows children die
+# ``release_process_groups``. ``scripts/check_detached_spawns.py`` flags new detached spawns
+# (start_new_session / process_group / setsid / setpgid; its docstring lists what it misses). POSIX-only: Windows children die
 # through the layer-3 job object instead.
 
 _supervisor = None  # Optional[subprocess.Popen]; tests rebind it

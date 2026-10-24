@@ -18,11 +18,17 @@ Flags, in Python files of the production trees (tests, evals, scripts and nix ch
   any reference to os.setsid / os.setpgid / os.setpgrp (call or ``preexec_fn=os.setsid``)
   a call to ``windows_detach_popen_kwargs()`` (``start_new_session=True`` on POSIX)
 
+Not caught: a PTY spawn (``pty.fork``, ``ptyprocess.PtyProcess.spawn``, which always start a new
+session), aliased imports (``from os import setsid``, ``import os as _os``), ``os.posix_spawn(...,
+setsid=True)`` and ``kw.setdefault("start_new_session", True)``. None is used to start a long-lived
+child in production today; a review still has to catch a new one.
+
 Opt out of one line with ``detached-spawn: ok — <why>`` on that line or the line directly above
-it. Legitimate reasons are the ones that stay valid after the owner dies: the child must OUTLIVE
-its owner on purpose (an updater relaunching the gateway, a restart watcher, a detached service
-launch), or the child is short-lived and awaited with a hard timeout that kills its group (the
-group exists only so that kill reaches grandchildren).
+it; a marker without a reason after the dash does not count. Legitimate reasons: the child must
+OUTLIVE its owner on purpose (an updater relaunching the gateway, a restart watcher, a detached
+service launch), or the child is awaited with a hard timeout that kills its group (the group
+exists only so that kill reaches grandchildren). That timeout runs in the owner, so an owner killed
+mid-wait leaves such a child to finish on its own: mark it only when that worst case is acceptable.
 
 ``_BASELINE`` maps a file to a tolerated count of unmarked hits. It is empty: every detached
 spawn site is on ``spawn_owned`` or marked with its reason. Keep it that way; an entry is a
@@ -35,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -101,18 +108,23 @@ def detach_lines(text: str) -> list[int]:
     return sorted(lines)
 
 
+# The marker counts only with a reason: ``detached-spawn: ok — <why>`` (an em dash or hyphens).
+_MARKED = re.compile(re.escape(MARKER) + r"\s*(?:—|-+)\s*\S")
+
+
 def _marked(src_lines: list[str], lineno: int) -> bool:
     here = src_lines[lineno - 1] if lineno - 1 < len(src_lines) else ""
     above = src_lines[lineno - 2] if lineno >= 2 else ""
-    return MARKER in here or MARKER in above
+    return bool(_MARKED.search(here) or _MARKED.search(above))
 
 
 def _tracked_files(root: Path) -> list[Path]:
     try:
         out = subprocess.run(["git", "-C", str(root), "ls-files", "-z", "--", *SCAN_TREES, *SCAN_ROOT_FILES],
                              capture_output=True, text=True, check=True, stdin=subprocess.DEVNULL, timeout=60).stdout
-    except (OSError, subprocess.SubprocessError):
-        return []
+    except (OSError, subprocess.SubprocessError) as exc:
+        # Fail closed: scanning nothing would report "no detached spawns".
+        raise RuntimeError(f"cannot list the tracked files under {root}: {exc}") from exc
     return [root / rel for rel in out.split("\0") if rel.endswith(".py")]
 
 
@@ -163,7 +175,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--strict-baseline", action="store_true", help="also fail when _BASELINE overstates a file")
     args = ap.parse_args(argv)
 
-    hits = scan(args.paths or None)
+    try:
+        hits = scan(args.paths or None)
+    except RuntimeError as exc:
+        print(f"check_detached_spawns: {exc}", file=sys.stderr)
+        return 2
     if args.print_baseline:
         print(_format_baseline(hits))
         return 0
