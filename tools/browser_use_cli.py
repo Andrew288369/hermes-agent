@@ -631,9 +631,8 @@ def stop_owned_harness_daemons() -> None:
     """Stop only the harness daemons this process owns (``_owned_daemon_groups``: started by its own
     commands). The exit handler uses this: a daemon another live Hermes started on the same name was
     driven here too, but it is that Hermes's to stop. Windows records no ownership (``_own_harness_daemon``
-    is POSIX-only), so there every driven daemon is stopped, as before."""
+    is POSIX-only) and its exit never stopped a browser_exec-only process's daemons, so nothing to do."""
     if os.name != "posix":
-        stop_harness_daemons()
         return
     with _owned_daemon_groups_lock:
         owned = dict(_owned_daemon_groups)

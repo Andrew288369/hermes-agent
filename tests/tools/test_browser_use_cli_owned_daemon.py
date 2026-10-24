@@ -311,3 +311,11 @@ def test_a_managed_worker_never_owns_its_harness_daemon(fake_daemon, registered,
 
     assert registered == []
 
+
+def test_windows_exit_stops_no_harness_daemon(monkeypatch):
+    """Windows records no ownership and its exit never stopped a browser_exec-only process's daemons:
+    reloading every driven one would stop a shared daemon another live Hermes is using."""
+    monkeypatch.setattr(browser_use_cli.os, "name", "nt")
+    monkeypatch.setattr(browser_use_cli, "_driven_daemons", {("", "", "", "", "default"): "home"})
+    monkeypatch.setattr(browser_use_cli, "_reload_daemons", lambda daemons: pytest.fail(f"reloaded {daemons}"))
+    browser_use_cli.stop_owned_harness_daemons()
