@@ -802,7 +802,7 @@ def _watch_supervisor(proc) -> None:
         # health: allow HX012 -- the thread waitpid()s one child and touches only process-global supervisor state
         threading.Thread(target=wait_then_restart, name="owner-death-supervisor-waiter", daemon=True).start()
     except Exception:
-        # The supervisor still works; it is only reaped at our exit and not restarted if killed.
+        # The supervisor still works; it is left a zombie until we exit and is not restarted if killed.
         logger.debug("Could not start the owner-death supervisor's waiter", exc_info=True)
 
 
@@ -865,7 +865,7 @@ def _start_supervisor_locked():
         proc.stdin.write("".join(f"register {pgid}\n" for pgid in _supervised_pgids))
         proc.stdin.flush()
     except (BrokenPipeError, ValueError, OSError):
-        _supervisor = None  # its waiter reaps it; the next registration change retries
+        _supervisor = None  # its waiter (if it has one) reaps it; the next registration change retries
         return None
     return proc
 

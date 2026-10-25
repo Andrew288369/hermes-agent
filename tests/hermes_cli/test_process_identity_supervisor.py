@@ -943,11 +943,12 @@ def test_a_process_that_cannot_start_a_thread_still_gets_its_child_and_releases_
     def no_threads(*_a, **_kw):
         raise RuntimeError("can't start new thread")
 
-    monkeypatch.setattr(_threading.Thread, "start", no_threads)
-    child = process_identity.spawn_owned([sys.executable, "-c", "pass"], purpose="test")
-    child.wait(timeout=10)
-    supervisor = process_identity._supervisor
-    process_identity.release_process_group_once_empty(child.pid, proc=child, timeout=5)
+    with monkeypatch.context() as patched:
+        patched.setattr(_threading.Thread, "start", no_threads)  # only around the spawn and release
+        child = process_identity.spawn_owned([sys.executable, "-c", "pass"], purpose="test")
+        assert child.wait(timeout=10) == 0, "spawn_owned did not hand back a working child"
+        supervisor = process_identity._supervisor
+        process_identity.release_process_group_once_empty(child.pid, proc=child, timeout=5)
     assert process_identity._supervisor is None, "with no timer thread the supervisor is released at once"
     if supervisor is not None:
         supervisor.wait(timeout=10)
