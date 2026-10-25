@@ -930,3 +930,24 @@ def test_an_idle_supervisor_stays_for_the_next_command_and_exits_after_the_grace
     assert process_identity._supervisor is first, "the second command spawned another supervisor"
     wait_until(lambda: process_identity._supervisor is None, timeout=10, what="the idle supervisor released")
     wait_until(lambda: first.returncode is not None, timeout=10, what="the idle supervisor to exit and be reaped")
+
+
+def test_a_process_that_cannot_start_a_thread_still_gets_its_child_and_releases_at_once(monkeypatch):
+    """The idle grace and the waiter each start a thread. A failure there (thread limit, a patched
+    Thread) must never escape spawn_owned after its Popen: the caller would lose the child's handle."""
+    import threading as _threading
+
+    monkeypatch.setattr(process_identity, "_SUPERVISOR_IDLE_EXIT_S", 30.0)
+    monkeypatch.setattr(process_identity, "register_child", lambda *a, **k: True)
+
+    def no_threads(*_a, **_kw):
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(_threading.Thread, "start", no_threads)
+    child = process_identity.spawn_owned([sys.executable, "-c", "pass"], purpose="test")
+    child.wait(timeout=10)
+    supervisor = process_identity._supervisor
+    process_identity.release_process_group_once_empty(child.pid, proc=child, timeout=5)
+    assert process_identity._supervisor is None, "with no timer thread the supervisor is released at once"
+    if supervisor is not None:
+        supervisor.wait(timeout=10)

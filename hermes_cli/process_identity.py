@@ -778,8 +778,12 @@ def _watch_supervisor(proc) -> None:
             if restart:
                 _start_supervisor_locked()
 
-    # health: allow HX012 -- the thread waitpid()s one child and touches only process-global supervisor state
-    threading.Thread(target=wait_then_restart, name="owner-death-supervisor-waiter", daemon=True).start()
+    try:
+        # health: allow HX012 -- the thread waitpid()s one child and touches only process-global supervisor state
+        threading.Thread(target=wait_then_restart, name="owner-death-supervisor-waiter", daemon=True).start()
+    except Exception:
+        # The supervisor still works; it is only reaped at our exit and not restarted if killed.
+        logger.debug("Could not start the owner-death supervisor's waiter", exc_info=True)
 
 
 # An idle supervisor (nothing registered) exits this long after the set last emptied, unless a new
@@ -802,9 +806,16 @@ def _release_when_idle_locked(proc) -> None:
         with _supervisor_lock:
             _close_idle_supervisor_locked(proc)
 
-    _idle_release = threading.Timer(_SUPERVISOR_IDLE_EXIT_S, release)
-    _idle_release.daemon = True
-    _idle_release.start()
+    try:
+        _idle_release = threading.Timer(_SUPERVISOR_IDLE_EXIT_S, release)
+        _idle_release.daemon = True
+        _idle_release.start()
+    except Exception:
+        # No thread for the grace (thread limit, interpreter shutdown): release at once, as before the
+        # grace existed. Losing the grace must never fail the live child this call is about.
+        _idle_release = None
+        logger.debug("Could not start the supervisor idle timer; releasing it now", exc_info=True)
+        _close_idle_supervisor_locked(proc)
 
 
 def _close_idle_supervisor_locked(proc) -> None:
