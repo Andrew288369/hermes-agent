@@ -744,7 +744,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
         # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
         log = open(sd / "launcher.log", "wb")
         # The profile's screen outlives whichever CLI/gateway started it, on purpose: launcher.pid carries
-        # (pid, create_time) so any later process reports/stops it, and the display watcher idle-stops it.
+        # (pid, create_time) so any later process reports/stops it, and the idle stop (idle_stop_minutes) ends it.
         proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             start_new_session=True, close_fds=True)  # detached-spawn: ok — per-profile screen, outlives its starter
