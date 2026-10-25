@@ -782,7 +782,10 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
             child_env["HERMES_BD_BROWSER_EXEC_LINE"] = dock_exec_line(*browser)
-        # Truncated per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise.
+        # A new file per start: the log is a diagnostic for THIS launch, and nothing rotates it otherwise. Not
+        # truncated in place: the old screen's idle check (in a session of its own) may still hold the old file
+        # open, and its late write would land in this one behind a run of NUL bytes.
+        (sd / "launcher.log").unlink(missing_ok=True)
         log = open(sd / "launcher.log", "wb")
         proc = subprocess.Popen(  # windows-footgun: ok — Linux-only runtime (is_supported_host)
             ["bash", str(_LAUNCHER)], env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
