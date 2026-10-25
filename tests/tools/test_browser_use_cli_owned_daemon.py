@@ -152,7 +152,8 @@ def test_a_sigkilled_owner_takes_its_harness_daemon_with_it(tmp_path):
         "import json, os, subprocess, sys, time\n"
         "from tools import browser_use_cli\n"
         f"d = subprocess.Popen([sys.executable, '-m', 'browser_harness.daemon'], cwd={str(tmp_path / 'pkgroot')!r},"
-        " stdin=subprocess.DEVNULL, start_new_session=True, env=browser_use_cli._base_subprocess_env())\n"
+        " stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, start_new_session=True,"
+        " env=browser_use_cli._base_subprocess_env())\n"
         f"open({str(runtime / 'bu.pid')!r}, 'w', encoding='utf-8').write(json.dumps({{'pid': d.pid}}))\n"  # windows-footgun: ok — a write
         f"browser_use_cli._own_harness_daemon({{'BH_RUNTIME_DIR': {str(runtime)!r}}})\n"
         "print(d.pid, flush=True)\n"
