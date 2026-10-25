@@ -951,3 +951,34 @@ def test_a_process_that_cannot_start_a_thread_still_gets_its_child_and_releases_
     assert process_identity._supervisor is None, "with no timer thread the supervisor is released at once"
     if supervisor is not None:
         supervisor.wait(timeout=10)
+
+
+def test_a_supervisor_killed_every_time_it_starts_is_not_restarted_in_a_loop(monkeypatch, tmp_path):
+    """A sandbox or OOM killer that kills every new /bin/sh at once must not turn the waiter's
+    restart into a fork loop: one young restart, then the next registration change retries."""
+    die = tmp_path / "die.sh"
+    die.write_text("kill -9 $$\n", encoding="utf-8")
+    monkeypatch.setattr(process_identity, "_SUPERVISOR_SCRIPT", die)
+    spawned = []
+    real_spawn = process_identity._spawn_supervisor
+
+    def counting():
+        proc = real_spawn()
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(process_identity, "_spawn_supervisor", counting)
+    child = subprocess.Popen(_VICTIM, start_new_session=True)
+    try:
+        process_identity.own_process_groups([child.pid])
+        wait_until(lambda: len(spawned) >= 2 and process_identity._supervisor is None
+                   and all(p.returncode is not None for p in spawned), timeout=15,
+                   what="the killed supervisor and its one young restart to settle")
+        time.sleep(1.0)  # health: allow HX013 -- no further restart over this window IS the behaviour
+        assert len(spawned) == 2, f"{len(spawned)} supervisors spawned for one registration"
+    finally:
+        _kill(child.pid)
+        child.wait(timeout=10)
+        for proc in spawned:
+            if proc is not None:
+                proc.wait(timeout=10)

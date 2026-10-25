@@ -750,10 +750,17 @@ def _spawn_supervisor():
     return proc
 
 
-# A supervisor that EXITS sooner than this after starting cannot stay up (a broken install: sh exiting
-# 2 or 127): the waiter leaves it to the next registration change instead of restarting it in a loop.
-# One killed by a signal is restarted whatever its age.
+# A supervisor that dies sooner than this after starting may not be able to stay up (a broken install:
+# sh exiting 2 or 127; a sandbox or OOM killer that keeps killing it): the waiter leaves it to the next
+# registration change instead of restarting it in a loop. One killed by a signal gets one young restart
+# (a new supervisor starts after every idle period, so a `pkill -f hermes` often meets a young one); if
+# its replacement is killed young as well, that one waits for the next registration change too.
 _SUPERVISOR_RESTART_MIN_UPTIME_S = 5.0
+
+
+# Set (under _supervisor_lock) while the waiter starts the young restart, so that replacement's own
+# waiter knows it already had one.
+_starting_young_restart = False
 
 
 def _watch_supervisor(proc) -> None:
@@ -763,9 +770,10 @@ def _watch_supervisor(proc) -> None:
     (``pkill -f hermes``, the OOM killer) is restarted and replayed at once, so coverage does not wait
     for the next registration change; a released one (EOF with an empty set) is only reaped."""
     started = time.monotonic()
+    young_restart = _starting_young_restart
 
     def wait_then_restart() -> None:
-        global _supervisor
+        global _supervisor, _starting_young_restart
         proc.wait()
         with _supervisor_lock:
             if _supervisor is not None and _supervisor is not proc:
@@ -776,13 +784,19 @@ def _watch_supervisor(proc) -> None:
             _prune_dead_supervised_pgids()
             if not _supervised_pgids:
                 return
-            restart = proc.returncode < 0 or time.monotonic() - started >= _SUPERVISOR_RESTART_MIN_UPTIME_S
+            old_enough = time.monotonic() - started >= _SUPERVISOR_RESTART_MIN_UPTIME_S
+            young_signal = not old_enough and proc.returncode < 0 and not young_restart
+            restart = old_enough or young_signal
             logger.warning(
                 "owner-death supervisor exited (status %s) with %d process group(s) registered; %s",
                 proc.returncode, len(_supervised_pgids),
                 "restarting it" if restart else "it could not stay up, retrying at the next registration")
             if restart:
-                _start_supervisor_locked()
+                _starting_young_restart = young_signal
+                try:
+                    _start_supervisor_locked()
+                finally:
+                    _starting_young_restart = False
 
     try:
         # health: allow HX012 -- the thread waitpid()s one child and touches only process-global supervisor state
