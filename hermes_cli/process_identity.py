@@ -365,6 +365,11 @@ def _new_entry(
     )
 
 
+# A ledger writer stopped mid-write (SIGSTOP, a debugger) must not stall every spawn_owned on the
+# machine: past this the write goes ahead under the thread lock alone, as when no lock can be taken.
+_LEDGER_LOCK_TIMEOUT_S = 2.0
+
+
 def _append_entry(entry: LedgerEntry) -> bool:
     """Prune dead entries and append ``entry`` — the ONLY ledger write path.
 
@@ -379,7 +384,7 @@ def _append_entry(entry: LedgerEntry) -> bool:
     path = _ledger_path()
     with _LEDGER_LOCK, ExitStack() as held:
         try:
-            held.enter_context(_FileLock(path.with_name(path.name + ".lock")))
+            held.enter_context(_FileLock(path.with_name(path.name + ".lock"), timeout=_LEDGER_LOCK_TIMEOUT_S))
         except (RuntimeError, OSError):
             # Best-effort like the write itself: the thread lock is then the only guard.
             logger.debug("spawn ledger lock unavailable", exc_info=True)

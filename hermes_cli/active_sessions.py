@@ -189,27 +189,46 @@ def _lease_paths(
     return home / "runtime" / "active_sessions.json", home / "runtime" / "active_sessions.lock"
 
 
-def _flock(fh, *, lock: bool) -> None:
-    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows)."""
+def _flock(fh, *, lock: bool, timeout: Optional[float] = None) -> None:
+    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows). With
+    ``timeout`` the lock is polled non-blocking and OSError raised once it passes, so a holder that is
+    stopped mid-write (SIGSTOP, a debugger) cannot stall the caller forever."""
     if os.name == "nt":
         import msvcrt
         fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
+    if not lock:
+        if os.name == "nt":
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        return
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        try:
+            if os.name == "nt":
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if deadline is None else msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX if deadline is None else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError:
+            if deadline is None or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 class _FileLock:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, timeout: Optional[float] = None):
         self.path = path
+        self.timeout = timeout
         self._fh = None
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = open(self.path, "a+b")
         try:
-            _flock(self._fh, lock=True)
+            _flock(self._fh, lock=True, timeout=self.timeout)
         except Exception as exc:
             self._fh.close()
             self._fh = None

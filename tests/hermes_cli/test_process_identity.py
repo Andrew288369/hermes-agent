@@ -448,3 +448,24 @@ def test_concurrent_processes_never_drop_each_others_ledger_rows(tmp_path):
         for w in writers:
             w.stdin.close()
             w.wait(timeout=30)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="fcntl lock holder")
+def test_a_stalled_ledger_lock_holder_never_blocks_a_spawn(tmp_path, monkeypatch):
+    """A holder stopped mid-write (SIGSTOP, a debugger) kept the lock: every spawn_owned on the
+    machine then waited forever. Past the timeout the row is written under the thread lock alone."""
+    import fcntl
+    import threading
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(pi, "_LEDGER_LOCK_TIMEOUT_S", 0.3)
+    ledger = pi._ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger.with_name(ledger.name + ".lock"), "a+b") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)  # the stalled holder
+        done = []
+        writer = threading.Thread(target=lambda: done.append(pi.register_child(os.getpid(), "stalled-lock")),
+                                  daemon=True)
+        writer.start()
+        writer.join(timeout=10)
+        assert done == [True], "register_child waited on a stalled lock holder"
