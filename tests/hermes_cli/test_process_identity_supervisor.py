@@ -871,10 +871,10 @@ def test_a_released_supervisor_leaves_no_zombie_child():
 def test_a_supervisor_killed_on_its_own_is_restarted_with_every_group_replayed(monkeypatch):
     """``pkill -f hermes`` (or the OOM killer) can take the supervisor out while this process lives.
     Its waiter restarts it at once and replays the registered groups, so they still die with us even
-    if no registration change ever comes; it is also reaped, never left a zombie."""
+    if no registration change ever comes; it is also reaped, never left a zombie. A signal death is
+    restarted however young the supervisor is (a new one starts after every idle period)."""
     import psutil
 
-    monkeypatch.setattr(process_identity, "_SUPERVISOR_RESTART_MIN_UPTIME_S", 0.0)
     child = subprocess.Popen(_VICTIM, start_new_session=True)
     try:
         process_identity.own_process_groups([child.pid])

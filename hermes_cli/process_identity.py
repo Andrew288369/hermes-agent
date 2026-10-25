@@ -745,8 +745,9 @@ def _spawn_supervisor():
     return proc
 
 
-# A supervisor that dies sooner than this after starting cannot stay up (a broken install): the waiter
-# leaves it to the next registration change instead of restarting it in a loop.
+# A supervisor that EXITS sooner than this after starting cannot stay up (a broken install: sh exiting
+# 2 or 127): the waiter leaves it to the next registration change instead of restarting it in a loop.
+# One killed by a signal is restarted whatever its age.
 _SUPERVISOR_RESTART_MIN_UPTIME_S = 5.0
 
 
@@ -770,7 +771,7 @@ def _watch_supervisor(proc) -> None:
             _prune_dead_supervised_pgids()
             if not _supervised_pgids:
                 return
-            restart = time.monotonic() - started >= _SUPERVISOR_RESTART_MIN_UPTIME_S
+            restart = proc.returncode < 0 or time.monotonic() - started >= _SUPERVISOR_RESTART_MIN_UPTIME_S
             logger.warning(
                 "owner-death supervisor exited (status %s) with %d process group(s) registered; %s",
                 proc.returncode, len(_supervised_pgids),
