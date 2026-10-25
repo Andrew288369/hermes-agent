@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import collections
+import errno
 import math
 import os
 import time
@@ -190,32 +191,21 @@ def _lease_paths(
 
 
 def _flock(fh, *, lock: bool, timeout: Optional[float] = None) -> None:
-    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows). With
-    ``timeout`` the lock is polled non-blocking and OSError raised once it passes, so a holder that is
-    stopped mid-write (SIGSTOP, a debugger) cannot stall the caller forever."""
+    """Exclusive whole-file lock/unlock on ``fh`` (fcntl on POSIX, msvcrt on Windows). With ``timeout``
+    the lock is retried only while another holder has it, then BlockingIOError is raised, so a holder
+    stopped mid-write (SIGSTOP, a debugger) cannot stall the caller; other errors raise at once."""
+    if lock and timeout is not None:
+        from pm.filesystem import lock_fd
+        if not lock_fd(fh.fileno(), wait=True, timeout=timeout):
+            raise BlockingIOError(errno.EWOULDBLOCK, f"file lock still held after {timeout}s")
+        return
     if os.name == "nt":
         import msvcrt
         fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if lock else msvcrt.LK_UNLCK, 1)
     else:
         import fcntl
-    if not lock:
-        if os.name == "nt":
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        return
-    deadline = None if timeout is None else time.monotonic() + timeout
-    while True:
-        try:
-            if os.name == "nt":
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK if deadline is None else msvcrt.LK_NBLCK, 1)
-            else:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX if deadline is None else fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except OSError:
-            if deadline is None or time.monotonic() >= deadline:
-                raise
-            time.sleep(0.02)
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX if lock else fcntl.LOCK_UN)
 
 
 class _FileLock:
@@ -232,7 +222,7 @@ class _FileLock:
         except Exception as exc:
             self._fh.close()
             self._fh = None
-            raise RuntimeError("active session file lock unavailable") from exc
+            raise RuntimeError(f"file lock unavailable: {self.path}") from exc
         return self
 
     def __exit__(self, exc_type, exc, tb):

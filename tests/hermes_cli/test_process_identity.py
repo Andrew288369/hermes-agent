@@ -451,7 +451,7 @@ def test_concurrent_processes_never_drop_each_others_ledger_rows(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fcntl lock holder")
-def test_a_stalled_ledger_lock_holder_never_blocks_a_spawn(tmp_path, monkeypatch):
+def test_a_stalled_ledger_lock_holder_never_blocks_register_child(tmp_path, monkeypatch):
     """A holder stopped mid-write (SIGSTOP, a debugger) kept the lock: every spawn_owned on the
     machine then waited forever. Past the timeout the row is written under the thread lock alone."""
     import fcntl
@@ -469,3 +469,5 @@ def test_a_stalled_ledger_lock_holder_never_blocks_a_spawn(tmp_path, monkeypatch
         writer.start()
         writer.join(timeout=10)
         assert done == [True], "register_child waited on a stalled lock holder"
+    rows = json.loads(ledger.read_text(encoding="utf-8"))
+    assert any(r.get("purpose") == "stalled-lock" for r in rows), "the row was not written past the timeout"
