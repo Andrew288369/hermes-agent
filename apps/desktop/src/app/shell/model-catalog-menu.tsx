@@ -280,7 +280,8 @@ export function ModelCatalogMenu({
     // Gateway-first even with no session: a connected (possibly remote)
     // gateway owns the model catalog, including virtual providers the local
     // REST fallback can't know about (#53817).
-    queryFn: (): Promise<ModelOptionsResult> => requestModelOptions({ gateway, profile, request, sessionId }),
+    queryFn: (): Promise<ModelOptionsResult> =>
+      requestModelOptions({ detectLocal: true, gateway, profile, request, sessionId }),
     refetchOnMount: query => nousRefetchOnMount(query.state.data),
     refetchInterval: query => nousPricingPoll(query.state.data, query.state.dataUpdateCount)
   })

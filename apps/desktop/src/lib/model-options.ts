@@ -101,6 +101,10 @@ export function customDefaultSupersedesPick(pickProvider: string, defaultProvide
 }
 
 interface ModelOptionsRequest {
+  /** An opened picker: the backend also scans this machine for local model
+   *  servers (Ollama, LM Studio, vLLM) and lists them as `Detected:` rows.
+   *  Other reads reuse that scan's rows without probing. */
+  detectLocal?: boolean
   /** When false, include ambient/unconfigured providers (onboarding/setup
    *  surfaces). Chat pickers default to true so only explicitly configured
    *  providers are listed (#56974). */
@@ -143,7 +147,17 @@ function restModelOptions(
   return profileKey ? getGlobalModelOptions(opts, profileKey) : getGlobalModelOptions(opts)
 }
 
+/** `{name: true}` for each set flag; unset flags are omitted from the RPC params. */
+function onFlags(flags: Record<string, boolean>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(flags)
+      .filter(([, on]) => on)
+      .map(([name]) => [name, true])
+  )
+}
+
 export async function requestModelOptions({
+  detectLocal = false,
   explicitOnly = true,
   gateway,
   profile,
@@ -154,18 +168,10 @@ export async function requestModelOptions({
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
 
   if (dispatch) {
-    const params: Record<string, unknown> = {}
+    const params = onFlags({ detect_local: detectLocal, explicit_only: explicitOnly, refresh })
 
     if (sessionId) {
       params.session_id = sessionId
-    }
-
-    if (refresh) {
-      params.refresh = true
-    }
-
-    if (explicitOnly) {
-      params.explicit_only = true
     }
 
     const profileKey = (profile ?? '').trim()
