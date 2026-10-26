@@ -40,21 +40,24 @@ def _size_delta_label(saved_mb: float) -> str:
 
 def _confirm_prompt(prompt: str) -> bool | None:
     """Prompt for y/N confirmation. ``None`` when no answer can be read (stdin is /dev/null or closed:
-    cron, a wrapper, a backgrounded shell), which is not the same as the user saying no."""
+    cron, a wrapper, a backgrounded shell), which is not the same as the user saying no. Ctrl-C
+    propagates: an interrupt is neither a no nor a success."""
     try:
         return input(prompt).strip().lower() in {"y", "yes"}
     except EOFError:
         print()
         return None
-    except KeyboardInterrupt:
-        return False
 
 
 def _confirm_or_exit_code(prompt: str, *, declined: str = "Cancelled.", unattended: str | None = "--yes") -> int | None:
     """``None`` to proceed, else the exit code after saying why not. A decline exits 0; a run nobody could
     answer exits 1, so a cron job or wrapper that forgot *unattended* does not read "nothing happened" as
     success."""
-    answer = _confirm_prompt(prompt)
+    try:
+        answer = _confirm_prompt(prompt)
+    except KeyboardInterrupt:
+        print("\nInterrupted; nothing was changed.")
+        return 130
     if answer:
         return None
     if answer is None:

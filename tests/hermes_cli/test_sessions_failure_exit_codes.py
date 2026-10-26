@@ -118,3 +118,9 @@ def test_confirmation_nobody_can_answer_exits_1_and_changes_nothing(monkeypatch,
     assert _run_cli(monkeypatch, argv) == 1
     assert "Pass --yes" in capsys.readouterr().out
     assert snapshot() == before
+
+    def ctrl_c(_prompt=""):
+        raise KeyboardInterrupt
+    monkeypatch.setattr("builtins.input", ctrl_c)  # an interrupt is not a decline either: `&& next` must not run
+    assert _run_cli(monkeypatch, argv) == 130
+    assert snapshot() == before
