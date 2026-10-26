@@ -38,12 +38,31 @@ def _size_delta_label(saved_mb: float) -> str:
     return f"reclaimed {saved_mb:.1f} MB" if saved_mb >= 0 else f"grew by {-saved_mb:.1f} MB"
 
 
-def _confirm_prompt(prompt: str) -> bool:
-    """Prompt for y/N confirmation, safe against non-TTY environments."""
+def _confirm_prompt(prompt: str) -> bool | None:
+    """Prompt for y/N confirmation. ``None`` when no answer can be read (stdin is /dev/null or closed:
+    cron, a wrapper, a backgrounded shell), which is not the same as the user saying no."""
     try:
         return input(prompt).strip().lower() in {"y", "yes"}
-    except (EOFError, KeyboardInterrupt):
+    except EOFError:
+        print()
+        return None
+    except KeyboardInterrupt:
         return False
+
+
+def _confirm_or_exit_code(prompt: str, *, declined: str = "Cancelled.", unattended: str | None = "--yes") -> int | None:
+    """``None`` to proceed, else the exit code after saying why not. A decline exits 0; a run nobody could
+    answer exits 1, so a cron job or wrapper that forgot *unattended* does not read "nothing happened" as
+    success."""
+    answer = _confirm_prompt(prompt)
+    if answer:
+        return None
+    if answer is None:
+        hint = f" Pass {unattended} to run it unattended." if unattended else " Run it from an interactive terminal."
+        print(f"No answer on a non-interactive stdin; nothing was changed.{hint}")
+        return 1
+    print(declined)
+    return 0
 
 
 def _not_found(session_id) -> int:
@@ -638,9 +657,9 @@ def _cmd_delete(db, args):
     # The delete is honored (explicit id), but a pin is a "keep" flag: say so instead of silently destroying it.
     _pinned_note = " (this session is PINNED)" if (db.get_session(resolved_session_id) or {}).get("pinned") else ""
     if not args.yes:
-        if not _confirm_prompt(f"Delete session '{resolved_session_id}'{_pinned_note} and all its messages? [y/N] "):
-            print("Cancelled.")
-            return
+        refused = _confirm_or_exit_code(f"Delete session '{resolved_session_id}'{_pinned_note} and all its messages? [y/N] ")
+        if refused is not None:
+            return refused
     elif _pinned_note:
         print(f"Warning: deleting a pinned session '{resolved_session_id}'.")
     from hermes_state_runtime import RuntimeStoreError
@@ -701,9 +720,9 @@ def _prune_never_active_keyed(db, args):
     if args.dry_run:
         print("Dry run — nothing deleted.")
         return
-    if not args.yes and not _confirm_prompt(f"Delete {len(candidates)} session(s)? [y/N] "):
-        print("Aborted.")
-        return
+    if not args.yes and (refused := _confirm_or_exit_code(f"Delete {len(candidates)} session(s)? [y/N] ",
+                                                          declined="Aborted.")) is not None:
+        return refused
     owner = getattr(args, "owner_endpoint", None)
     if owner is not None:
         from hermes_cli.gateway_client import GatewayClientError
@@ -808,9 +827,9 @@ def _cmd_prune_or_archive(db, args, action):
             print(f"Dry run — nothing {'deleted' if prune else 'archived'}.")
             return
     verb = "Delete" if prune else "Archive"
-    if not args.yes and not _confirm_prompt(f"{verb} these {len(candidates)} session(s) ({_span})? [y/N] "):
-        print("Cancelled.")
-        return
+    if not args.yes and (refused := _confirm_or_exit_code(
+            f"{verb} these {len(candidates)} session(s) ({_span})? [y/N] ")) is not None:
+        return refused
     if prune and getattr(args, "owner_endpoint", None) is not None:
         # The live gateway owns the store: it deletes, through the housekeeping retirement path.
         from hermes_cli.gateway_client import GatewayClientError
@@ -1064,14 +1083,8 @@ def _cmd_optimize_storage(db, args):
     if before_mb > 500:
         print("  This may take a while on a large database. It runs in the foreground with progress below; "
               "safe to Ctrl-C and re-run (it resumes).")
-    if not getattr(args, "yes", False):
-        try:
-            resp = input("Proceed? [y/N] ").strip().lower()
-        except EOFError:
-            resp = ""
-        if resp not in ("y", "yes"):
-            print("Cancelled.")
-            return
+    if not getattr(args, "yes", False) and (refused := _confirm_or_exit_code("Proceed? [y/N] ")) is not None:
+        return refused
     # optimize_fts_storage re-scans for holders itself (--force past one, or a writer that opens the
     # store mid-run) and paces while one is there; the progress line says so.
     progress = _OptimizeProgress()
@@ -1120,9 +1133,10 @@ def _cmd_repair_routing(db, args):
               "Re-run with --apply to perform them.")
         return
     print("\nStop the gateway before applying — a running gateway still holds the old routing mapping in memory.")
-    if not _confirm_prompt(f"Adopt {len(adoptable)} orphaned session(s)? [y/N] "):
-        print("Aborted — nothing was changed.")
-        return
+    refused = _confirm_or_exit_code(f"Adopt {len(adoptable)} orphaned session(s)? [y/N] ",
+                                    declined="Aborted — nothing was changed.", unattended=None)
+    if refused is not None:
+        return refused
     repaired = 0
     for record in adoptable:
         if db.adopt_orphaned_gateway_session(record["orphan_id"], record["donor_id"]):
@@ -1268,9 +1282,10 @@ def _cmd_repair_prompts(db, args):
         return 0
 
     # JSON mode is the non-interactive automation surface; --apply is the explicit mutation opt-in.
-    if not as_json and not _confirm_prompt(f"Clear {len(findings)} stored prompt(s)? [y/N] "):
-        print("Aborted - nothing was changed.")
-        return 0
+    if not as_json and (refused := _confirm_or_exit_code(
+            f"Clear {len(findings)} stored prompt(s)? [y/N] ", declined="Aborted - nothing was changed.",
+            unattended="--json")) is not None:
+        return refused
 
     cleared = []
     for finding in findings:
