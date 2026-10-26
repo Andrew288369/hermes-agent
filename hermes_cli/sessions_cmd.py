@@ -39,14 +39,14 @@ def _size_delta_label(saved_mb: float) -> str:
 
 
 def _confirm_prompt(prompt: str) -> bool | None:
-    """Prompt for y/N confirmation. ``None`` when no answer can be read (stdin is /dev/null or closed:
-    cron, a wrapper, a backgrounded shell), which is not the same as the user saying no. Ctrl-C
-    propagates: an interrupt is neither a no nor a success."""
+    """Prompt for y/N confirmation. ``None`` when stdin is not a terminal and hits EOF (/dev/null, an empty
+    pipe: cron, a wrapper), which is not the same as the user saying no; Ctrl-D at a terminal is a no.
+    Ctrl-C propagates: an interrupt is neither a no nor a success."""
     try:
         return input(prompt).strip().lower() in {"y", "yes"}
     except EOFError:
         print()
-        return None
+        return False if sys.stdin.isatty() else None
 
 
 def _confirm_or_exit_code(prompt: str, *, declined: str = "Cancelled.", unattended: str | None = "--yes") -> int | None:
@@ -417,7 +417,7 @@ def _cmd_export(db, args):
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
             if resolved and _too_large([resolved]):
-                return None
+                return 1
             data = _one(resolved) if resolved else None
             if not data:
                 return _not_found(args.session_id)
@@ -427,13 +427,13 @@ def _cmd_export(db, args):
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
             if _too_large([row["id"] for row in candidates]):
-                return None
+                return 1
             return [s for s in (_one(row["id"]) for row in candidates) if s]
         if args.dry_run:
             print("--dry-run requires at least one filter.")
             return 1
         if _too_large():
-            return None
+            return 1
         return [_redact(s) for s in db.export_all(source=None, **projection)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
