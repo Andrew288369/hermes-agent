@@ -816,6 +816,7 @@ export interface ModelOptionsParams {
   explicit_only?: boolean
   include_unconfigured?: boolean
   refresh?: boolean
+  detect_local?: boolean
 }
 export interface ModelOptionsResult {
   providers: ModelOptionProvider[]

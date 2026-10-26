@@ -191,3 +191,16 @@ def test_hermes_model_offers_detected_row_and_pick_saves_named_provider(servers)
     assert slug == "custom:local-lmstudio"
     assert _named_custom_provider_map(load_config())[slug]["base_url"] == f"http://127.0.0.1:{srv.port}/v1"
     assert _adopt_detected_pick("openrouter") == "openrouter"
+
+
+def test_model_options_rpc_accepts_the_picker_scan_flag(servers):
+    """Desktop sends ``detect_local`` from an opened picker; the RPC contract must accept it."""
+    import tui_gateway.methods_complete  # registers model.options
+    from tui_gateway.server import handle_request
+
+    servers("ollama", {"/v1/models": _models(["llama3.2:3b"], "library")})
+    reply = handle_request({"jsonrpc": "2.0", "id": 1, "method": "model.options",
+                            "params": {"detect_local": True, "explicit_only": True}})
+
+    assert "error" not in reply, reply
+    assert "local-ollama" in [p["slug"] for p in reply["result"]["providers"]]
