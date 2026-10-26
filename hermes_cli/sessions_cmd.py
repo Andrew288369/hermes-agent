@@ -46,7 +46,9 @@ def _confirm_prompt(prompt: str) -> bool | None:
         return input(prompt).strip().lower() in {"y", "yes"}
     except EOFError:
         print()
-        return False if sys.stdin.isatty() else None
+        # isatty() alone is True for Windows NUL; the console check keeps `< NUL` unattended (#113977).
+        from hermes_cli.gateway_windows import _stdin_console_mode_ok, _stdin_is_interactive
+        return False if _stdin_is_interactive(isatty=sys.stdin.isatty(), console_mode_ok=_stdin_console_mode_ok()) else None
 
 
 def _confirm_or_exit_code(prompt: str, *, declined: str = "Cancelled.", unattended: str | None = "--yes") -> int | None:

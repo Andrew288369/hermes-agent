@@ -124,3 +124,23 @@ def test_confirmation_nobody_can_answer_exits_1_and_changes_nothing(monkeypatch,
     monkeypatch.setattr("builtins.input", ctrl_c)  # an interrupt is not a decline either: `&& next` must not run
     assert _run_cli(monkeypatch, argv) == 130
     assert snapshot() == before
+
+
+@pytest.mark.platforms("any")
+def test_redirected_null_stdin_is_unattended_on_every_os(tmp_path):
+    """A real ``stdin=DEVNULL`` child: Windows reports isatty() True for NUL, which must still read as
+    nobody-could-answer (exit 1), never as a decline that lets ``&& next`` run."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    _old_ended_session(home / "state.db")
+    root = str(Path(__file__).resolve().parents[2])
+    env = {**os.environ, "HERMES_HOME": str(home), "PYTHONPATH": root}
+    proc = subprocess.run([sys.executable, "-m", "hermes_cli.main", "sessions", "delete", "s-old"], cwd=root,
+                          env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=120, check=False)
+    assert proc.returncode == 1, proc.stdout + proc.stderr
+    assert "Pass --yes" in proc.stdout
