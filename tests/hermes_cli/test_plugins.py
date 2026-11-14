@@ -167,12 +167,15 @@ class TestPluginDiscovery:
         skill.mkdir(parents=True)
         app = tmp_path / "example-app"
         app.write_text("", encoding="utf-8")
+        # darwin paths must be POSIX-absolute; tmp_path is a Windows path on Windows, so
+        # keep the real on-disk path on macOS and a POSIX literal elsewhere.
+        darwin_location = str(app) if sys.platform == "darwin" else "/Users/hermes/example-app"
         (plugin / "plugin.json").write_text(
             json.dumps({
                 "$schema": PLUGIN_SCHEMA_V1,
                 "name": "portable.test",
                 "extensions": {"com.nousresearch.hermes": {"servers": {"worker": {
-                    "app": {"darwin": {"presence": "executable", "location": str(app)}},
+                    "app": {"darwin": {"presence": "executable", "location": darwin_location}},
                     "requires": {"app": True},
                     "liveness": {"kind": "static"},
                 }}}},
