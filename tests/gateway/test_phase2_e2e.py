@@ -115,7 +115,7 @@ def _prepare_board(tmp_path, monkeypatch, *, body=BODY, consecutive_failures=0):
 
 def _connection(tmp_path, monkeypatch, *, subject, calls):
     """A ``run_task`` connection whose session layer is mocked per subject."""
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
 
     async def submit(actor, submission, **kwargs):
         calls.append(('submit', submission))
@@ -132,7 +132,7 @@ def _connection(tmp_path, monkeypatch, *, subject, calls):
     monkeypatch.setattr(_slr, 'local_receipt', lambda db, sid: None)
     db = SimpleNamespace(get_session=lambda sid: True, db_path=str(tmp_path / 'state.db'))
     authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
-    actor = Principal(subject, str(tmp_path), frozenset({'session:create'}), 'transport')
+    actor = SessionActor(subject, str(tmp_path), frozenset({'session:create'}), 'transport')
     return SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
 
 

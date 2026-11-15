@@ -218,7 +218,7 @@ def _prepare_board(tmp_path, monkeypatch, *, body=BODY, consecutive_failures=0):
 
 
 def _run_task(tmp_path, task, monkeypatch, *, session_id=OWNER, enforce='1'):
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_kanban import run_task
     if enforce is None:
         monkeypatch.delenv('HERMES_KANBAN_OWNERSHIP_ENFORCE', raising=False)
@@ -247,7 +247,7 @@ def _run_task(tmp_path, task, monkeypatch, *, session_id=OWNER, enforce='1'):
     monkeypatch.setattr(_slr, 'local_receipt', lambda db, sid: None)
     db = SimpleNamespace(get_session=lambda sid: True, db_path=str(tmp_path / 'state.db'))
     authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
-    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board=BOARD, task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)
     return run_task, connection, params, calls
